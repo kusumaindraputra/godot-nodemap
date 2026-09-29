@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "godot-nodemap"
+version = "0.1.0"
+description = "Turn a Godot 4 project (GDScript + C#) into a queryable knowledge graph for AI coding assistants: scene trees, node paths, signals, autoloads, input actions, plus a Godot-aware linter."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["networkx>=3.0"]
+keywords = ["godot", "godot4", "gdscript", "claude-code", "knowledge-graph", "mcp", "gamedev", "vibe-coding"]
+
+[project.scripts]
+nodemap = "godot_nodemap.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools]
+packages = ["godot_nodemap"]
+
+[tool.setuptools.package-data]
+godot_nodemap = ["skill.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

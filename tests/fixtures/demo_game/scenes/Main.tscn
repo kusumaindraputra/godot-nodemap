@@ -1,0 +1,21 @@
+[gd_scene load_steps=5 format=3 uid="uid://cmainscene001"]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="PackedScene" uid="uid://cplayerscene01" path="res://scenes/Player.tscn" id="2_player"]
+[ext_resource type="PackedScene" path="res://scenes/HUD.tscn" id="3_hud"]
+[ext_resource type="PackedScene" path="res://scenes/Coin.tscn" id="4_coin"]
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_main")
+
+[node name="Player" parent="." instance=ExtResource("2_player")]
+position = Vector2(100, 200)
+
+[node name="HUD" parent="." instance=ExtResource("3_hud")]
+
+[node name="Coins" type="Node2D" parent="." groups=["collectibles"]]
+
+[node name="Coin" parent="Coins" instance=ExtResource("4_coin")]
+
+[connection signal="hit" from="Player" to="." method="_on_player_hit"]
+[connection signal="died" from="Player" to="." method="_on_player_dead"]
