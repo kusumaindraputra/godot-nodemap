@@ -75,3 +75,22 @@ def test_csharp_facts():
     assert m.emits[0]["signal"] == "Collected" and m.emits[0]["func"] == "OnBodyEntered"
     assert m.connects[0]["signal"] == "BodyEntered" and m.connects[0]["handler"] == "OnBodyEntered"
     assert m.actions[0]["name"] == "interact"
+
+
+def test_markdown_refs_sections_and_own_block():
+    from godot_nodemap.docs import parse_markdown
+
+    d = parse_markdown(FIXTURE / "docs" / "design.md", "res://docs/design.md")
+    assert d.title == "Demo Game design"
+    assert [t for _, t, _ in d.sections] == ["Demo Game design", "Player", "HUD", "Removed"]
+    refs = {(r["kind"], r["text"], r["member"]) for r in d.refs}
+    assert ("path", "../scripts/player.gd", "") in refs
+    assert ("path", "res://scripts/dash.gd", "") in refs
+    assert ("path", "notes/old.md", "") in refs
+    assert ("qualified", "Player", "take_damage") in refs
+    assert ("code", "jump", "") in refs  # inline code span
+    assert ("qualified", "Events", "coin_collected") in refs  # fenced code block
+    respawn = next(r for r in d.refs if r["member"] == "player_respawned")
+    assert respawn["callish"] and respawn["section"] == "Removed"
+    readme = parse_markdown(FIXTURE / "README.md", "res://README.md")
+    assert not any("ghost_signal" in r["text"] or "nowhere" in r["text"] for r in readme.refs)

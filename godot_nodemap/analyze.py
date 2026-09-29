@@ -12,7 +12,10 @@ from .graph import Graph
 # Structural edges say "X is part of Y"; they are useful for navigation but
 # would make every file a god node, so analysis weighs them down.
 STRUCTURAL = {"defines", "declares", "contains", "has_child"}
-FILE_KINDS = {"script", "scene", "resource"}
+# docs point at code but are not part of it: they must not make code look
+# central or glue subsystems together
+DOC_RELATIONS = {"mentions"}
+FILE_KINDS = {"script", "scene", "resource", "doc"}
 
 
 def to_networkx(g: Graph, directed: bool = False):
@@ -42,6 +45,8 @@ def cluster(g: Graph, seed: int = 42) -> None:
     F = nx.Graph()
     member_of: dict[str, str] = {}
     for nid, n in g.nodes.items():
+        if n["kind"] == "doc":
+            continue  # docs join the community of the code they mention (below)
         f = owner_file(g, nid) if n["kind"] in ("function", "signal", "node") else nid
         member_of[nid] = f
         F.add_node(f)
@@ -49,7 +54,7 @@ def cluster(g: Graph, seed: int = 42) -> None:
         a, b = member_of.get(e["source"]), member_of.get(e["target"])
         if not a or not b or a == b:
             continue
-        w = 0.3 if e["relation"] in STRUCTURAL else 1.0
+        w = 0.3 if e["relation"] in STRUCTURAL else 0.15 if e["relation"] in DOC_RELATIONS else 1.0
         if F.has_edge(a, b):
             F[a][b]["weight"] += w
         else:
@@ -68,10 +73,22 @@ def cluster(g: Graph, seed: int = 42) -> None:
         for f in c:
             file_comm[f] = i
     out: dict[int, list[str]] = defaultdict(list)
-    for nid in g.nodes:
+    for nid in member_of:
         out[file_comm.get(member_of[nid], 0)].append(nid)
+    # a doc belongs where most of what it mentions lives; unlinked docs share one community
+    votes: dict[str, Counter] = defaultdict(Counter)
+    for e in g.edges:
+        if e["relation"] in DOC_RELATIONS and e["target"] in member_of:
+            votes[e["source"]][file_comm.get(member_of[e["target"]], 0)] += 1
+    unlinked = len(comms)
+    for nid, n in g.nodes.items():
+        if n["kind"] == "doc":
+            v = votes.get(nid)
+            out[v.most_common(1)[0][0] if v else unlinked].append(nid)
     g.communities = dict(out)
     g.community_labels = {cid: _label(g, members, F) for cid, members in g.communities.items()}
+    if unlinked in g.communities:
+        g.community_labels[unlinked] = "docs not linked to code"
 
 
 def is_test(path: str) -> bool:
@@ -83,7 +100,7 @@ def is_test(path: str) -> bool:
 
 def _label(g: Graph, members: list[str], F) -> str:
     files = [m for m in members if g.nodes[m]["kind"] in FILE_KINDS | {"autoload"}]
-    game = [f for f in files if not is_test(g.nodes[f].get("file", f))]
+    game = [f for f in files if not is_test(g.nodes[f].get("file", f)) and g.nodes[f]["kind"] != "doc"]
     files = game or files
     dirs = Counter()
     for f in files:
@@ -103,7 +120,7 @@ def degree_table(g: Graph) -> Counter:
     """Cross-file degree: how many distinct other files touch this node."""
     touch: dict[str, set] = defaultdict(set)
     for e in g.edges:
-        if e["relation"] in STRUCTURAL:
+        if e["relation"] in STRUCTURAL or e["relation"] in DOC_RELATIONS:
             continue
         s, t = e["source"], e["target"]
         fs, ft = owner_file(g, s), owner_file(g, t)
@@ -127,7 +144,7 @@ def surprising_connections(g: Graph, top: int = 10) -> list[dict]:
     pair_count: Counter = Counter()
     cross = []
     for e in g.edges:
-        if e["relation"] in STRUCTURAL:
+        if e["relation"] in STRUCTURAL or e["relation"] in DOC_RELATIONS:
             continue
         a, b = cof.get(e["source"]), cof.get(e["target"])
         if a is None or b is None or a == b:
@@ -204,3 +221,24 @@ def stats(g: Graph) -> dict:
     return {"nodes": len(g.nodes), "edges": len(g.edges), "kinds": dict(kinds),
             "relations": dict(rels), "confidence": dict(conf), "issues": dict(sev),
             "communities": len(g.communities)}
+
+
+def doc_coverage(g: Graph) -> tuple[list[dict], list[str]]:
+    """Per doc: what it mentions. Plus the god nodes / autoloads no doc mentions."""
+    mentioned: dict[str, set[str]] = defaultdict(set)
+    per_doc: dict[str, list[str]] = defaultdict(list)
+    for e in g.edges:
+        if e["relation"] == "mentions" and e["target"] in g.nodes:
+            per_doc[e["source"]].append(e["target"])
+            mentioned[e["target"]].add(e["source"])
+    docs = []
+    for nid, n in g.nodes.items():
+        if n["kind"] == "doc":
+            targets = per_doc.get(nid, [])
+            docs.append({"id": nid, "title": n["label"], "mentions": sorted(set(targets)),
+                         "stale": sum(1 for i in g.issues if i["file"] == nid and i["code"] == "stale-doc-reference")})
+    docs.sort(key=lambda d: -len(d["mentions"]))
+    important = [n for n, _ in god_nodes(g, 12)] + [n for n in g.nodes if g.nodes[n]["kind"] == "autoload"]
+    undocumented = [n for n in dict.fromkeys(important) if n not in mentioned
+                    and not (g.nodes[n]["kind"] == "autoload" and g.nodes[n].get("path") in mentioned)]
+    return docs, undocumented

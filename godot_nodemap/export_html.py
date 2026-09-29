@@ -58,10 +58,12 @@ code { font-size:12px; color:#c9d1d9; }
 <script>
 const DATA = __DATA__;
 const KIND_COLORS = {script:"#478cbf", scene:"#e07a5f", node:"#f2cc8f", function:"#81b29a", signal:"#c77dff",
-  autoload:"#ffd166", resource:"#9aa5b1", asset:"#5c6370", action:"#06d6a0", group:"#ef476f", missing:"#ff0000"};
-const DEFAULT_ON = new Set(["script","scene","signal","autoload","resource","action","group","missing"]);
+  autoload:"#ffd166", resource:"#9aa5b1", asset:"#5c6370", action:"#06d6a0", group:"#ef476f", missing:"#ff0000",
+  doc:"#f4a261"};
+const DEFAULT_ON = new Set(["script","scene","signal","autoload","resource","action","group","missing","doc"]);
 const REL_COLORS = {emits:"#c77dff", connected_to:"#c77dff", calls:"#81b29a", extends:"#478cbf", instances:"#e07a5f",
-  has_script:"#478cbf", node_path:"#f2cc8f", uses_autoload:"#ffd166", preloads:"#9aa5b1", loads:"#9aa5b1"};
+  has_script:"#478cbf", node_path:"#f2cc8f", uses_autoload:"#ffd166", preloads:"#9aa5b1", loads:"#9aa5b1",
+  mentions:"#f4a261"};
 const byId = new Map(DATA.nodes.map(n => [n.id, n]));
 const adj = new Map();
 for (const e of DATA.edges) {
@@ -139,13 +141,14 @@ function showNode(id) {
   setTab("node");
   const n = byId.get(id);
   let h = `<h2>${esc(n.label)}</h2><div class="k">${esc(n.kind)} · ${loc(n.file, n.line)}</div>`;
+  if (n.sections) h += `<div class="k">sections</div><ul>${n.sections.map(x => "<li>" + esc(x) + "</li>").join("")}</ul>`;
   for (const k of ["class_name","extends","type","params","doc","declared_in","path"]) if (n[k]) h += `<div><span class="k">${k}:</span> ${esc(n[k])}</div>`;
   if (n.exports) h += `<div><span class="k">exports:</span> ${esc(n.exports.join(", "))}</div>`;
   const groups = {};
   for (const [e, dir] of adj.get(id) || []) {
     const other = dir === "out" ? e.target : e.source;
     const key = dir === "out" ? `${e.relation} →` : `← ${e.relation}`;
-    (groups[key] = groups[key] || []).push(`${link(other)}${e.signal ? " <span class='k'>(" + esc(e.signal) + ")</span>" : ""}${e.confidence !== "EXTRACTED" ? " <span class='k'>[" + e.confidence + "]</span>" : ""} <span class="k">@${loc(e.file, e.line)}</span>`);
+    (groups[key] = groups[key] || []).push(`${link(other)}${e.signal ? " <span class='k'>(" + esc(e.signal) + ")</span>" : ""}${e.section ? " <span class='k'>§ " + esc(e.section) + "</span>" : ""}${e.confidence !== "EXTRACTED" ? " <span class='k'>[" + e.confidence + "]</span>" : ""} <span class="k">@${loc(e.file, e.line)}</span>`);
   }
   for (const k of Object.keys(groups).sort()) h += `<div class="k">${esc(k)} (${groups[k].length})</div><ul>${groups[k].slice(0, 60).map(x => "<li>" + x + "</li>").join("")}</ul>`;
   const iss = DATA.issues.filter(i => i.file === n.file && (["script","scene","resource"].includes(n.kind) || i.line === n.line));
@@ -160,7 +163,7 @@ function showIssues() {
 function showComms() {
   const cs = Object.entries(DATA.communities).sort((a, b) => b[1].nodes.length - a[1].nodes.length);
   panel.innerHTML = cs.map(([cid, c]) => {
-    const files = c.nodes.filter(id => ["script","scene","autoload","resource"].includes(byId.get(id)?.kind));
+    const files = c.nodes.filter(id => ["script","scene","autoload","resource","doc"].includes(byId.get(id)?.kind));
     return `<div><span class="sw" style="background:${commColor(+cid)}"></span> <b>C${cid}</b> ${esc(c.label)} <span class="k">(${files.length} files)</span><ul>${files.slice(0, 12).map(f => "<li>" + link(f) + "</li>").join("")}</ul></div>`;
   }).join("");
 }

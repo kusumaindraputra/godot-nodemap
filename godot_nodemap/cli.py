@@ -17,7 +17,7 @@ from .report import generate
 COMMANDS = {"build", "update", "query", "path", "explain", "tree", "signal", "check", "serve", "watch",
             "stats", "install", "claude", "agents", "hook-guard", "hook-check", "help"}
 
-WATCH_EXT = {".gd", ".cs", ".tscn", ".tres", ".godot", ".uid", ".import"}
+WATCH_EXT = {".gd", ".cs", ".tscn", ".tres", ".godot", ".uid", ".import", ".md"}
 
 
 def _out(root: Path, out: str | None) -> Path:
@@ -25,11 +25,12 @@ def _out(root: Path, out: str | None) -> Path:
 
 
 def run_build(target: Path, include_addons: bool = False, exclude: list[str] | None = None,
-              out: str | None = None, html: bool = True, quiet: bool = False) -> tuple[Graph, Path]:
+              out: str | None = None, html: bool = True, quiet: bool = False,
+              docs: bool = True) -> tuple[Graph, Path]:
     t0 = time.time()
     root = find_project_root(target)
     out_dir = _out(root, out)
-    g = build(root, include_addons=include_addons, exclude=exclude, out_dir=out_dir)
+    g = build(root, include_addons=include_addons, exclude=exclude, out_dir=out_dir, include_docs=docs)
     analyze.cluster(g)
     out_dir.mkdir(parents=True, exist_ok=True)
     g.save(out_dir / "graph.json")
@@ -44,7 +45,7 @@ def run_build(target: Path, include_addons: bool = False, exclude: list[str] | N
         sev = st["issues"]
         f = g.meta["files"]
         print(f"nodemap {__version__}: {g.meta.get('project') or root.name}")
-        print(f"  {f['scripts']} scripts, {f['scenes']} scenes, {f['resources']} resources "
+        print(f"  {f['scripts']} scripts, {f['scenes']} scenes, {f['resources']} resources, {f.get('docs', 0)} docs "
               f"-> {st['nodes']} nodes, {st['edges']} edges, {st['communities']} communities "
               f"({time.time() - t0:.1f}s)")
         print(f"  health: {sev.get('error', 0)} errors, {sev.get('warning', 0)} warnings, {sev.get('info', 0)} notes")
@@ -64,21 +65,29 @@ def load_graph(out: str | None = None, auto_build: bool = True) -> Graph:
     return Graph.load(p)
 
 
-def _rebuild_like_existing(root: Path, out: str | None) -> Graph:
+def _last_options(root: Path, out: str | None) -> dict:
+    """Options the existing graph was built with, so rebuilds keep them."""
+    opts = {"include_addons": False, "docs": True}
     p = _out(root, out) / "graph.json"
-    include_addons = False
     if p.exists():
         try:
-            include_addons = bool(json.loads(p.read_text(encoding="utf-8")).get("meta", {}).get("include_addons"))
+            meta = json.loads(p.read_text(encoding="utf-8")).get("meta", {})
+            opts["include_addons"] = bool(meta.get("include_addons"))
+            opts["docs"] = bool(meta.get("docs", True))
         except Exception:
             pass
-    g, _ = run_build(root, include_addons=include_addons, out=out, quiet=True)
+    return opts
+
+
+def _rebuild_like_existing(root: Path, out: str | None) -> Graph:
+    o = _last_options(root, out)
+    g, _ = run_build(root, include_addons=o["include_addons"], out=out, quiet=True, docs=o["docs"])
     return g
 
 
 # ---------------------------------------------------------------- hooks
 
-_EXTS = (".gd", ".cs", ".tscn", ".tres", "project.godot")
+_EXTS = (".gd", ".cs", ".tscn", ".tres", ".md", "project.godot")
 
 
 def hook_guard() -> int:
@@ -111,7 +120,8 @@ def hook_check() -> int:
         res = "res://" + path.resolve().relative_to(root).as_posix()
     except ValueError:
         return 0
-    issues = check.filter_issues(g, [res], "warning")
+    # a doc edit also surfaces its stale references (info level everywhere else)
+    issues = check.filter_issues(g, [res], "info" if res.endswith(".md") else "warning")
     errors = [i for i in issues if i["severity"] == "error"]
     if errors:
         sys.stderr.write(f"nodemap check found problems after editing {res}:\n" + check.format_text(issues) +
@@ -140,9 +150,9 @@ def _snapshot(root: Path) -> dict:
     return snap
 
 
-def watch(root: Path, include_addons: bool, interval: float) -> None:
+def watch(root: Path, include_addons: bool, interval: float, docs: bool = True) -> None:
     root = find_project_root(root)
-    run_build(root, include_addons=include_addons)
+    run_build(root, include_addons=include_addons, docs=docs)
     prev = _snapshot(root)
     print(f"nodemap: watching {root} (Ctrl+C to stop)")
     try:
@@ -151,7 +161,7 @@ def watch(root: Path, include_addons: bool, interval: float) -> None:
             cur = _snapshot(root)
             if cur != prev:
                 prev = cur
-                run_build(root, include_addons=include_addons)
+                run_build(root, include_addons=include_addons, docs=docs)
     except KeyboardInterrupt:
         pass
 
@@ -181,18 +191,18 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--include-addons", action="store_true", help="also map res://addons/")
         p.add_argument("--exclude", action="append", default=[], help="skip a folder (repeatable), e.g. --exclude tests")
         p.add_argument("--no-html", action="store_true")
+        p.add_argument("--no-docs", action="store_true", help="do not map Markdown docs (*.md)")
         p.add_argument("--interval", type=float, default=2.0)
         a = p.parse_args(rest)
         if cmd == "watch":
-            watch(Path(a.path), a.include_addons, a.interval)
+            watch(Path(a.path), a.include_addons, a.interval, not a.no_docs)
             return 0
-        include_addons = a.include_addons
-        if cmd == "update" and not include_addons:
-            root = find_project_root(Path(a.path))
-            gp = _out(root, a.out) / "graph.json"
-            if gp.exists():
-                include_addons = bool(json.loads(gp.read_text(encoding="utf-8")).get("meta", {}).get("include_addons"))
-        run_build(Path(a.path), include_addons, a.exclude, a.out, not a.no_html, quiet=False)
+        include_addons, docs = a.include_addons, not a.no_docs
+        if cmd == "update":
+            last = _last_options(find_project_root(Path(a.path)), a.out)
+            include_addons = include_addons or last["include_addons"]
+            docs = docs and last["docs"]
+        run_build(Path(a.path), include_addons, a.exclude, a.out, not a.no_html, quiet=False, docs=docs)
         return 0
     if cmd == "query":
         p.add_argument("question", nargs="+")
@@ -282,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 HELP = """usage:
-  nodemap [path] [--include-addons] [--exclude DIR] [--no-html]   build graph + report + html
+  nodemap [path] [--include-addons] [--exclude DIR] [--no-html] [--no-docs]   build graph + report + html
   nodemap update [path]                 rebuild (cached, fast)
   nodemap watch [path]                  rebuild on every change
   nodemap query "<question>" [--budget N] [--dfs]

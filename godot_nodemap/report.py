@@ -22,7 +22,8 @@ def generate(g: Graph, max_issues: int = 25, max_tree_nodes: int = 40) -> str:
     feats = ", ".join(m.get("engine_features", []))
     L.append(f"Godot {feats or '4.x'} | renderer: {m.get('renderer') or 'default'} | "
              f"{'GDScript + C#' if m.get('csharp') else 'GDScript'} | "
-             f"{m['files']['scripts']} scripts, {m['files']['scenes']} scenes, {m['files']['resources']} resources")
+             f"{m['files']['scripts']} scripts, {m['files']['scenes']} scenes, {m['files']['resources']} resources"
+             + (f", {m['files']['docs']} docs" if m["files"].get("docs") else ""))
     L.append(f"Graph: {st['nodes']} nodes, {st['edges']} edges, {st['communities']} communities | "
              f"edges: " + ", ".join(f"{k} {v}" for k, v in st["confidence"].items()))
     L.append("")
@@ -147,6 +148,25 @@ def generate(g: Graph, max_issues: int = 25, max_tree_nodes: int = 40) -> str:
         L.append("")
         for e in surprising:
             L.append(f"- {fmt_edge(g, e)}")
+        L.append("")
+
+    docs, undocumented = analyze.doc_coverage(g)
+    if docs:
+        L.append("## Docs")
+        L.append("")
+        L.append("Markdown files and the code they talk about (`nodemap explain <name>` lists the docs that mention it).")
+        L.append("")
+        for d in docs[:25]:
+            top = ", ".join(_short(g, t) for t in d["mentions"][:8])
+            more = f" +{len(d['mentions']) - 8}" if len(d["mentions"]) > 8 else ""
+            stale = f" | **{d['stale']} stale reference(s)**" if d["stale"] else ""
+            L.append(f"- **{d['title']}** (`{d['id'].replace('res://', '')}`): {len(d['mentions'])} links{stale}"
+                     + (f": {top}{more}" if top else ""))
+        if len(docs) > 25:
+            L.append(f"- ... {len(docs) - 25} more docs")
+        if undocumented:
+            L.append("")
+            L.append("Central code no doc mentions: " + ", ".join(f"`{_short(g, n)}`" for n in undocumented[:12]))
         L.append("")
 
     L.append("## Suggested questions")

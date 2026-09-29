@@ -86,3 +86,40 @@ def test_query_helpers(graph):
     assert "hops" in path
     exp = query.explain(graph, "Player")
     assert "missing-node" in exp and "take_damage" in exp
+
+
+def test_docs_are_linked_to_code(graph):
+    doc = "res://docs/design.md"  # lives in a .gdignore folder: still mapped
+    assert graph.nodes[doc]["kind"] == "doc" and graph.nodes[doc]["label"] == "Demo Game design"
+    m = {x["target"]: x for x in graph.edges if x["source"] == doc and x["relation"] == "mentions"}
+    assert m["res://scripts/player.gd"]["confidence"] == "EXTRACTED"
+    assert m["res://scripts/player.gd::fn:take_damage"]["section"] == "Player"
+    assert "res://autoload/events.gd::sig:player_died" in m
+    assert m["res://scripts/player.gd::sig:died"]["confidence"] == "INFERRED"
+    assert {"action:jump", "group:collectibles", "res://scenes/HUD.tscn", "res://scenes/Main.tscn"} <= set(m)
+    readme = {x["target"] for x in graph.edges if x["source"] == "res://README.md"}
+    assert {"res://scenes/Main.tscn", "res://autoload/game_state.gd::fn:add_score", doc} <= readme
+
+
+def test_stale_doc_references(graph):
+    stale = {(i["file"], i["line"]) for i in graph.issues if i["code"] == "stale-doc-reference"}
+    assert stale == {("res://docs/design.md", 19), ("res://docs/design.md", 20), ("res://docs/design.md", 21)}
+    assert all(i["severity"] == "info" for i in graph.issues if i["code"] == "stale-doc-reference")
+
+
+def test_docs_do_not_skew_analysis(graph):
+    deg = analyze.degree_table(graph)
+    assert "res://docs/design.md" not in deg
+    assert not any(e["relation"] == "mentions" for e in analyze.surprising_connections(graph, 50))
+    # the design doc joins the community of the code it talks about
+    cof = graph.community_of()
+    assert cof["res://docs/design.md"] in {cof["res://scripts/player.gd"], cof["res://autoload/events.gd"]}
+
+
+def test_no_docs_option(game):
+    from godot_nodemap.build import build
+
+    g = build(game, use_cache=False, include_docs=False)
+    assert not any(n["kind"] == "doc" for n in g.nodes.values())
+    assert not any(i["code"] == "stale-doc-reference" for i in g.issues)
+    assert g.meta["docs"] is False
