@@ -459,7 +459,7 @@ class Linker:
             g.issue("warning", "invalid-uid", res, 1,
                     f"{len(bad)} uid(s) are not valid Godot uids and are ignored by the engine: {', '.join(bad[:4])}"
                     + (" ..." if len(bad) > 4 else ""),
-                    "Godot uids are generated (base-34, e.g. uid://c3k8x2...). Delete invented uid=\"...\" "
+                    "Godot generates uids itself (e.g. uid://c3k8x2...). Delete invented uid=\"...\" "
                     "attributes and let the editor assign real ones.")
         for e in model.ext.values():
             target = self.res_ref(e.path, e.uid)

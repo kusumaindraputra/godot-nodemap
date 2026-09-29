@@ -1,176 +1,476 @@
 # godot-nodemap
 
-**Turn a Godot 4 project into a knowledge graph your AI coding assistant can query.**
-Inspired by [graphify](https://github.com/Graphify-Labs/graphify), built specifically for Godot.
+**Turn a Godot 4 project into a knowledge graph your AI coding assistant can query, and lint the
+mistakes AI makes in Godot code.**
 
-Generic code-graph tools read `.gd` files as text. They miss where a Godot project's structure
-actually lives: `.tscn` scene trees, instanced and inherited scenes, signal connections made in the
-editor, `$NodePath` lookups, autoloads, the Input Map, groups and `uid://` references. So when you
-vibe-code a Godot game, the AI guesses node paths, wires signals to methods that don't exist,
-invents `uid://` values and mixes Godot 3 syntax into Godot 4 code. `nodemap` gives the assistant
-the real structure and checks its edits.
+Inspired by [graphify](https://github.com/Graphify-Labs/graphify), built specifically for Godot
+(GDScript **and** C#). Fully offline, no LLM calls, pure Python with a single dependency
+(`networkx`).
 
 ```
-nodemap .
-  380 scripts, 16 scenes, 134 resources -> 5697 nodes, 15377 edges, 23 communities (1.3s)
-  health: 1 errors, 5 warnings, 14 notes
+$ nodemap .
+nodemap 0.1.0: Demo Game
+  7 scripts, 4 scenes, 1 resources -> 54 nodes, 76 edges, 6 communities (0.0s)
+  health: 9 errors, 3 warnings, 4 notes
   wrote nodemap-out/graph.json, NODEMAP_REPORT.md, nodemap.html
 ```
 
-- **`nodemap-out/NODEMAP_REPORT.md`**: a one-page map covering the main scene, autoloads and their
-  signals, input actions, groups, the health check, god nodes, communities (subsystems), the signal
-  bus (who emits and who listens), every scene tree, surprising cross-subsystem links and
-  suggested questions.
-- **`nodemap-out/graph.json`**: the full graph (nodes, edges, communities, issues).
-- **`nodemap-out/nodemap.html`**: an interactive viewer. You can search, filter by kind, colour by
-  community, click any node to see its connections, and browse issues.
+---
 
-It works fully offline with no LLM calls. It is pure Python, and its only dependency is `networkx`.
-GDScript and C# are both supported.
+## Contents
+
+- [Why](#why)
+- [What you get](#what-you-get)
+- [Install](#install)
+- [Quick start (5 minutes)](#quick-start-5-minutes)
+- [A tour of the commands](#a-tour-of-the-commands)
+- [Using it with AI assistants](#using-it-with-ai-assistants)
+- [`nodemap check` reference](#nodemap-check-reference)
+- [The graph model](#the-graph-model)
+- [Options](#options)
+- [How it works](#how-it-works)
+- [Compared with graphify](#compared-with-graphify)
+- [Limitations and FAQ](#limitations-and-faq)
+- [Development](#development)
+
+---
+
+## Why
+
+Most of a Godot project's structure does not live in the code. It lives in `.tscn` scene trees,
+signal connections made in the editor, `project.godot` (autoloads, Input Map, layers) and `uid://`
+references. Generic code-graph tools and plain grep only see `.gd` text. An AI assistant working
+from text alone keeps making the same mistakes:
+
+| What the AI does | Why it happens | What nodemap gives it |
+|---|---|---|
+| Writes `$Player/Weapon` for a node that doesn't exist | It can't see the scene tree | `nodemap tree Player` shows the real tree, and `check` flags the bad path |
+| Connects `died` to `_on_player_dead` when the method is `_on_player_died` | Editor connections live in `.tscn` | `[connection]`s are resolved to functions, and a missing method is an error |
+| Uses `Input.is_action_pressed("crouch")` | It doesn't know the Input Map | The report lists every action, and `check` flags undeclared ones |
+| Writes `uid="uid://my_player_script"` in a `.tscn` | It invents ids | `check` flags invalid, unknown and duplicate uids |
+| Types `res://Scenes/HUD.tscn` for `res://scenes/HUD.tscn` | It doesn't notice case | `check` flags it (works in the editor on Windows, breaks in exports) |
+| Writes `yield(...)`, `export var` or `KinematicBody2D` | Godot 3 habits | `check` flags Godot 3 syntax |
+| Greps 20 files to learn who reacts to `player_died` | Signal wiring is spread across code and scenes | `nodemap signal player_died` gives emitters and listeners with `file:line` |
+
+## What you get
+
+Running `nodemap .` in a Godot project writes three files to `nodemap-out/`:
+
+| File | For | Contents |
+|---|---|---|
+| `NODEMAP_REPORT.md` | Humans and LLMs (one-page overview) | Main scene, autoloads and their signals, input actions, groups, named layers, the health check, god nodes, communities (subsystems), the signal bus, every scene tree, surprising cross-subsystem links, suggested questions |
+| `graph.json` | Tools, the MCP server, your own scripts | All nodes, edges, communities and issues |
+| `nodemap.html` | Exploring visually | Interactive graph: search, filter by kind, colour by community, click a node to see its connections, and a browsable issue list |
+
+A `cache/` folder is also created (ignored by the generated `.gitignore`), so later runs only
+re-parse the files that changed.
 
 ## Install
 
+Requires Python 3.10+. Godot does **not** need to be installed. nodemap reads the project files
+directly.
+
 ```bash
 pipx install git+https://github.com/kusumaindraputra/godot-nodemap
-# or: uv tool install git+https://github.com/kusumaindraputra/godot-nodemap
+# or
+uv tool install git+https://github.com/kusumaindraputra/godot-nodemap
+# or, inside a virtualenv
+pip install git+https://github.com/kusumaindraputra/godot-nodemap
 ```
 
-Then, inside your Godot project:
+Check it works:
 
 ```bash
-nodemap .                    # build graph + report + html (finds project.godot itself)
-nodemap claude install       # CLAUDE.md rules + Claude Code hooks (add --mcp for the MCP server)
-nodemap install              # optional: global /nodemap skill in ~/.claude/skills
-nodemap agents install       # AGENTS.md rules for Codex, Cursor, Gemini CLI, Copilot, ...
+nodemap --version
 ```
 
-## Commands
+## Quick start (5 minutes)
 
-| Command | What it gives you |
+The repository ships a small demo game with some bugs planted on purpose, so you can try every
+command before pointing nodemap at your own project.
+
+```bash
+git clone https://github.com/kusumaindraputra/godot-nodemap
+cd godot-nodemap/tests/fixtures/demo_game
+
+nodemap .                          # 1. build the graph
+open nodemap-out/nodemap.html      # 2. look around (xdg-open on Linux, start on Windows)
+nodemap tree Main --expand 1       # 3. see a scene tree
+nodemap check                      # 4. see what's broken
+nodemap query "what happens when the player dies"   # 5. ask a question
+```
+
+For your own game:
+
+```bash
+cd path/to/your-godot-project      # any folder inside it works, nodemap finds project.godot
+nodemap .
+nodemap claude install             # if you use Claude Code (see below)
+```
+
+## A tour of the commands
+
+| Command | What it answers |
 |---|---|
-| `nodemap [path] [--include-addons] [--exclude DIR]` | Build (cached, ~1s on a 400-script project) |
-| `nodemap update` | Rebuild with the same options (only changed files are re-parsed) |
-| `nodemap watch` | Rebuild on every change |
-| `nodemap query "what happens when the player dies"` | Best-matching entities + their neighbourhood, each edge with `file:line` (`--budget`, `--dfs`) |
-| `nodemap explain PlayerController` | One script / scene / node / function / signal / autoload / action with all its relations and issues |
-| `nodemap path Coin HUD` | Shortest chain of relations between two things |
-| `nodemap tree Main --expand 1` | Scene tree: types, scripts, instances, `%unique` names, groups, signal connections |
-| `nodemap signal player_died` | Where a signal is declared, who emits it, who listens (code **and** `.tscn`) |
-| `nodemap check [files] [--severity info] [--json]` | Godot-aware lint (exit code 1 on errors) |
-| `nodemap serve` | MCP stdio server |
+| `nodemap [path]` | Build or refresh the graph, report and HTML |
+| `nodemap update` | Incremental rebuild (keeps `--include-addons` from the last build) |
+| `nodemap watch` | Rebuild whenever a project file changes |
+| `nodemap tree <Scene> [--expand N]` | "What nodes does this scene have?" |
+| `nodemap signal <name>` | "Who emits this signal, and who listens?" |
+| `nodemap explain <name>` | "Tell me everything about this script/scene/node/function/signal/autoload/action" |
+| `nodemap query "<question>" [--budget N] [--dfs]` | "What's relevant to this question?" |
+| `nodemap path <A> <B>` | "How does A reach B?" |
+| `nodemap check [files] [--severity] [--json]` | "What's broken?" (exit code 1 when there are errors) |
+| `nodemap stats` | Counts by node kind, relation and confidence |
+| `nodemap serve` | MCP server over stdio |
 
-Example (`nodemap query "what happens when the player dies"`):
+Names are matched loosely. `Main`, `Main.tscn` and `res://scenes/Main.tscn` all work, and a query
+for "player dies" finds `player_died`.
+
+### `nodemap tree`: scene trees, including instanced scenes
 
 ```
+$ nodemap tree Main --expand 1
+# Main.tscn (res://scenes/Main.tscn)  [main scene]
+Main (Node2D)  script=main.gd   :8
+├─ Player (CharacterBody2D)  instance=Player.tscn  hit->main.gd._on_player_hit()  died->Main.tscn:.   :11
+│     Player (CharacterBody2D)  script=Player  group=player   :8
+│     ├─ Sprite2D (Sprite2D)   :11
+│     ├─ AnimationPlayer (AnimationPlayer)   :13
+│     ├─ CollisionShape2D (CollisionShape2D)   :15
+│     └─ %Hurtbox (Area2D)   :18
+├─ HUD (CanvasLayer)  instance=HUD.tscn   :14
+│     HUD (CanvasLayer)  script=hud.gd   :5
+│     └─ ScoreLabel (Label)   :8
+└─ Coins (Node2D)  group=collectibles   :16
+   └─ Coin (Area2D)  instance=Coin.tscn   :18
+         Coin (Area2D)  script=Coin   :5
+         └─ Sprite2D (Sprite2D)   :8
+```
+
+Every line ends with the line number in the `.tscn` file. The tree also shows `%Unique` names,
+groups and editor signal connections (`hit->main.gd._on_player_hit()`). A connection whose target
+method doesn't exist falls back to the node (`died->Main.tscn:.`), which is a hint that
+something is wrong.
+
+### `nodemap signal`: the signal bus
+
+```
+$ nodemap signal coin_collected
+# signal coin_collected(amount: int) declared in events.gd (autoload/events.gd:5)
+emitted by (0):
+listeners (2):
+  - hud.gd._on_coin_collected() @scripts/hud.gd:7
+  - main.gd._on_coin_collected() @scripts/main.gd:7
+```
+
+Signal wiring is collected from `.tscn` `[connection]`s and from every Godot 4 code form:
+`sig.connect(f)`, `Autoload.sig.connect(f)`, `$Node.sig.connect(f)`, `typed_var.sig.connect(f)`,
+lambdas, `connect("sig", Callable(...))`, `sig.emit()`, `emit_signal("sig")`, and in C#
+`Sig += Handler`, `Connect(SignalName.X, ...)` and `EmitSignal(SignalName.X)`.
+
+### `nodemap explain`: everything about one thing
+
+```
+$ nodemap explain Player
+# [script] Player (scripts/player.gd:1)
+class_name: Player
+extends: CharacterBody2D
+lang: gdscript
+doc: The player character.
+exports: speed: float
+issues:
+  - error missing-node @scripts/player.gd:18: node path 'Weapon' does not resolve: no node 'Weapon' in res://scenes/Player.tscn (parent '.' has: AnimationPlayer, CollisionShape2D, Hurtbox, Sprite2D)
+  ...
+<- has_script (1)
+  - Player.tscn:. @scenes/Player.tscn:8
+declares -> (2)
+  - Player::hit @scripts/player.gd:5
+  - Player::died @scripts/player.gd:6
+node_path -> (2)
+  - Player.tscn:Sprite2D @scripts/player.gd:12
+  - Player.tscn:AnimationPlayer @scripts/player.gd:13
+uses_autoload -> (1)
+  - Events @scripts/player.gd:34
+```
+
+### `nodemap query`: a scoped subgraph for a question
+
+```
+$ nodemap query "what happens when the player dies" --budget 400
 Seeds:
-- [signal] player_died in health_and_damage.gd (src/systems/health_and_damage.gd:62)
+- [signal] died in Player (scripts/player.gd:6)
+- [signal] player_died in events.gd (autoload/events.gd:4)
+- [script] Player (scripts/player.gd:1)
 Edges:
-- health_and_damage.gd::player_died --connected_to--> game_state_manager.gd._on_player_died()  @src/core/game_state_manager.gd:92
-- health_and_damage.gd::player_died --connected_to--> PlayerController._on_player_died()  @src/gameplay/player_controller.gd:181
-- health_and_damage.gd::player_died --connected_to--> CombatHUD._on_player_died()  @src/ui/combat_hud.gd:344
-- health_and_damage.gd.apply_damage() --emits--> health_and_damage.gd::player_died  @src/systems/health_and_damage.gd:319
+- Player.take_damage() --emits--> Player::died  @scripts/player.gd:33
+- Player.take_damage() --emits--> events.gd::player_died  @scripts/player.gd:34
+- events.gd::player_died --connected_to--> hud.gd._ready()  @scripts/hud.gd:8
+- Player --node_path--> Player.tscn:Sprite2D  @scripts/player.gd:12
+...
 ```
 
-## `nodemap check`: catches the mistakes AI makes in Godot
+Seeds are the entities that best match the question. The command then walks outward from them,
+listing signal, call and node-path edges first and structural edges last, and stops at
+`--budget` tokens so the output fits in an LLM context.
 
-| Code | Severity | Example |
-|---|---|---|
-| `missing-node` | error | `$Weapon` but the scene the script is attached to has no `Weapon` (resolves through instanced and inherited scenes, `%Unique` names and subclass attachments) |
-| `missing-method` | error | `.tscn` `[connection ... method="_on_player_dead"]` but the script has no such function |
-| `connection-missing-node` | error | `[connection from="Foo/Bar"]` where the node is gone |
-| `missing-handler` | error | `died.connect(_on_player_gone)` with no `_on_player_gone()` |
-| `unknown-signal` | warning | `hitt.emit()` for a signal that is never declared |
-| `undeclared-action` | error | `Input.is_action_pressed("crouch")` and `crouch` is not in the Input Map (also understands actions registered with `InputMap.add_action`) |
-| `missing-resource` | error | `preload("res://scenes/Bullet.tscn")` that doesn't exist |
-| `case-mismatch` | error | `res://Scenes/HUD.tscn` vs `res://scenes/HUD.tscn`: works in the editor on Windows, **breaks exported builds** |
-| `invalid-uid` / `unknown-uid` / `stale-path` / `duplicate-uid` | warning / error | Hand-written or AI-invented `uid://b_player_scene`, which Godot silently ignores |
-| `autoload-class-name-conflict` | error | Autoload `GameState` whose script also says `class_name GameState` |
-| `duplicate-class-name`, `missing-autoload`, `missing-main-scene` | error | |
-| `godot3-syntax` | warning | `yield`, `export var`, `onready var`, `setget`, `.instance()`, `KinematicBody2D`, `move_and_slide(velocity)`, ... |
-| `signal-never-emitted`, `signal-never-connected`, `unused-action` | info | Dead wiring |
+### `nodemap check`: the linter
 
-Nodes created at runtime (`child.name = "HitArea"`) and `get_node_or_null()` / `has_node()` lookups
-are downgraded, so dynamic code doesn't drown you in false positives.
+```
+$ nodemap check
+scenes/Main.tscn:21: error [missing-method] [connection signal="died" from="Player" to="."]: method _on_player_dead() is not defined in res://scripts/main.gd (or its base classes; engine base Node2D)
+    hint: Add `func _on_player_dead(...)` to main.gd or fix the connection.
+scripts/player.gd:9: error [case-mismatch] preload(): res://Scenes/HUD.tscn differs in case from the real file res://scenes/HUD.tscn
+    hint: Works in the editor on Windows/macOS but breaks in exported builds. Fix the casing.
+scripts/player.gd:18: error [missing-node] node path 'Weapon' does not resolve: no node 'Weapon' in res://scenes/Player.tscn (parent '.' has: AnimationPlayer, CollisionShape2D, Hurtbox, Sprite2D)
+scripts/Coin.cs:21: error [undeclared-action] input action 'interact' is not declared in project.godot [input]
+scenes/Player.tscn:1: warning [invalid-uid] 1 uid(s) are not valid Godot uids and are ignored by the engine: uid://my_player_script
+scripts/player.gd:39: warning [godot3-syntax] Godot 3 `yield()` - use `await signal` in Godot 4
+...
+nodemap check: 9 errors, 3 warnings, 0 notes
+```
 
-## Claude Code integration
+- `nodemap check scripts/player.gd` limits the report to issues in (or pointing at) that file.
+- `--severity info` also shows notes.
+- `--json` gives machine-readable output.
+- The exit code is 1 when there are errors, so `check` can gate CI.
 
-`nodemap claude install` does what `graphify claude install` does, adapted for Godot:
+## Using it with AI assistants
 
-1. **`CLAUDE.md` section**: tells the agent to query the graph first, check the scene tree before
-   writing node paths, never invent uids, and run `nodemap check` after edits.
-2. **PreToolUse hook (Grep|Glob)**: reminds the agent that the graph exists before it greps.
-3. **PostToolUse hook (Edit|Write|MultiEdit)**: after every edit to a `.gd` / `.cs` / `.tscn` / `.tres`
-   file it refreshes the graph (incremental) and runs `check` on that file. Errors are fed straight
-   back to the agent (exit code 2), so it fixes a broken `$NodePath` or signal connection *before*
-   you run the game.
-4. `--mcp` also registers the MCP server in `.mcp.json`.
+### Claude Code
 
-`nodemap claude uninstall` removes all of it and leaves the rest of your `CLAUDE.md` alone.
+```bash
+nodemap install            # optional: a global /nodemap skill in ~/.claude/skills/nodemap
+nodemap claude install     # per project (run inside the Godot project)
+nodemap claude install --mcp   # same, plus the MCP server in .mcp.json
+```
 
-### MCP tools
+`nodemap claude install` sets up:
 
-`query_graph`, `get_node`, `shortest_path`, `get_scene_tree`, `find_signal`, `check_project`,
-`project_info`, `graph_stats`. The server reloads `graph.json` when it changes, so hook rebuilds are
-picked up live.
+1. **A section in `CLAUDE.md`.** It tells the agent to query the graph before grepping, check
+   `nodemap tree` before writing node paths, never invent uids, and run `nodemap check` after
+   edits. Your existing `CLAUDE.md` content is kept.
+2. **A PreToolUse hook on Grep/Glob.** It reminds the agent that the graph exists.
+3. **A PostToolUse hook on Edit/Write/MultiEdit.** This is the key piece: every edit is checked
+   right away.
+
+```
+Claude edits scripts/player.gd
+  -> hook: nodemap refreshes the graph (only changed files are re-parsed)
+  -> hook: runs `check` for player.gd
+  -> errors?  yes -> fed back to Claude (exit code 2), which fixes them before moving on
+              no  -> silent (warnings are passed along as extra context)
+```
+
+4. **The project-level `/nodemap` skill** in `.claude/skills/nodemap/SKILL.md`.
+
+`nodemap claude uninstall` removes everything it added.
+
+### Any MCP client (Claude Desktop, Cursor, ...)
 
 ```json
-{ "mcpServers": { "nodemap": { "command": "nodemap", "args": ["serve"] } } }
+{
+  "mcpServers": {
+    "nodemap": { "command": "nodemap", "args": ["serve"] }
+  }
+}
 ```
 
-## The graph
+Start the client from the project folder (or pass `"args": ["serve", "--graph", "/path/to/nodemap-out/graph.json"]`).
+The server reloads `graph.json` whenever it changes.
 
-**Node kinds:** `scene`, `node` (a node inside a scene), `script`, `function`, `signal`,
-`autoload`, `action` (input action), `group`, `resource` (`.tres`), `asset` (textures, audio, ...),
-`missing`.
+| MCP tool | Same as |
+|---|---|
+| `query_graph` | `nodemap query` |
+| `get_node` | `nodemap explain` |
+| `shortest_path` | `nodemap path` |
+| `get_scene_tree` | `nodemap tree` |
+| `find_signal` | `nodemap signal` |
+| `check_project` | `nodemap check` |
+| `project_info` | autoloads, actions, groups, layers, god nodes, communities |
+| `graph_stats` | `nodemap stats` |
 
-**Relations:** `contains`, `has_child`, `instances`, `inherits_scene`, `has_script`, `extends`,
-`defines`, `declares`, `overrides`, `calls`, `emits`, `connected_to`, `node_path`, `uses_autoload`,
-`uses_class`, `preloads`, `loads`, `references`, `uses`, `uses_action`, `in_group`,
-`adds_to_group`, `queries_group`, `autoloads`.
+### Codex, Cursor, Gemini CLI, Copilot and others
 
-**Confidence** (same idea as graphify):
+```bash
+nodemap agents install     # writes the same rules into AGENTS.md
+```
 
-- `EXTRACTED` means the relation is written in the source: a `[connection]`, `Events.died.emit()`, or
-  `$Sprite2D` resolved in the attached scene.
+Pair it with `nodemap watch` in a terminal so the graph stays fresh while you work.
+
+### Recommended workflow
+
+1. Run `nodemap .` once and skim `NODEMAP_REPORT.md` (or have your assistant summarise it).
+2. Ask questions through `query`, `explain`, `tree` and `signal` instead of letting the assistant
+   read whole files.
+3. Let the edit hook (or `nodemap check` before each commit) catch broken paths, connections and
+   ids.
+4. Optionally add `nodemap check --severity error` to CI.
+
+## `nodemap check` reference
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `missing-node` | error | `$Path`, `%Name` or `get_node("...")` does not exist in any scene the script runs in. Resolution goes through instanced and inherited scenes, `%Unique` names, subclasses and parent scenes |
+| `missing-method` | error / warning | A `.tscn` `[connection]` targets a method the target script (or its base classes) doesn't define |
+| `connection-missing-node` | error | A `[connection]` `from`/`to` node is not in the scene |
+| `missing-handler` | error / warning | `sig.connect(handler)` where `handler()` is not defined |
+| `unknown-signal` | warning | `sig.emit()` for a signal the script never declares |
+| `undeclared-action` | error / warning | An input action is used but not in `project.godot` `[input]` or registered with `InputMap.add_action` |
+| `missing-resource` | error | A `preload`, `load`, `ext_resource`, `extends "res://..."` or path literal points to a missing file |
+| `case-mismatch` | error | A `res://` path differs in case from the file on disk |
+| `invalid-uid` | warning | A `uid://` value that isn't a valid Godot uid (Godot silently ignores it) |
+| `unknown-uid` | warning / error | A valid-looking uid that no file owns |
+| `stale-path` | warning | The uid resolves to a different file than the `path=` says |
+| `duplicate-uid` | error | Two files share a uid (common after copying files outside the editor) |
+| `duplicate-class-name` | error | Two scripts declare the same `class_name` |
+| `autoload-class-name-conflict` | error | An autoload's script has `class_name` equal to the autoload name |
+| `missing-autoload`, `missing-main-scene` | error | `project.godot` points at a missing file |
+| `godot3-syntax` | warning | `yield`, `export var`, `onready var`, `tool`, `setget`, `.instance()`, `change_scene()`, `connect("s", self, "m")`, `rand_range`, `Pool*Array`, `KinematicBody2D`/`Spatial`/..., `move_and_slide(velocity)`, ... |
+| `signal-never-emitted`, `signal-never-connected` | info | Dead signal wiring |
+| `unused-action` | info | An Input Map action no script uses |
+
+To avoid false positives:
+
+- Nodes created at runtime and named in code (`child.name = "HitArea"`) are not reported.
+- `get_node_or_null()` and `has_node()` lookups are only notes.
+- Scripts that `add_child()` get warnings instead of errors.
+- Paths built from variables or format strings (`"res://levels/%d.tscn"`) are skipped.
+
+## The graph model
+
+**Node kinds**
+
+| Kind | Id example |
+|---|---|
+| `scene` | `res://scenes/Main.tscn` |
+| `node` (inside a scene) | `res://scenes/Main.tscn::node:Coins/Coin` |
+| `script` | `res://scripts/player.gd` |
+| `function` | `res://scripts/player.gd::fn:take_damage` |
+| `signal` | `res://autoload/events.gd::sig:player_died` |
+| `autoload` | `autoload:Events` |
+| `action` | `action:jump` |
+| `group` | `group:collectibles` |
+| `resource` (`.tres`), `asset` (textures, audio, ...), `missing` | `res://data/level_1.tres` |
+
+**Relations**
+
+| Group | Relations |
+|---|---|
+| Scene structure | `contains`, `has_child`, `instances`, `inherits_scene`, `has_script`, `in_group` |
+| Code structure | `extends`, `defines`, `declares`, `overrides`, `calls`, `uses_class`, `uses_autoload` |
+| Signals | `emits` (function to signal), `connected_to` (signal to handler; carries `signal=` when the signal is built-in, like `pressed`) |
+| Node paths | `node_path` (function/script to the scene node it resolves to) |
+| Resources | `preloads`, `loads`, `references`, `uses` |
+| Project | `autoloads`, `uses_action`, `adds_to_group`, `queries_group` |
+
+**Confidence** (as in graphify)
+
+- `EXTRACTED` means the relation is literally in the source: a `[connection]`,
+  `Events.player_died.emit()`, or `$Sprite2D` resolved in the attached scene.
 - `INFERRED` means it was resolved through a typed variable (`var player: Player`, then
-  `player.died.connect(...)`) or through a unique signal name.
+  `player.died.connect(...)`) or through a signal name that only one script declares.
 - `AMBIGUOUS` means several scripts declare a signal with that name.
 
-Communities are Louvain clusters over the file-level graph, labelled by dominant folder and hub.
-God nodes are ranked by how many *other files* touch them.
+**`graph.json` shape**
+
+```json
+{
+  "meta": {"project": "Demo Game", "engine_features": ["4.3", "Forward Plus"], "autoloads": {...}, "input_actions": [...], ...},
+  "nodes": [{"id": "res://scripts/player.gd", "kind": "script", "label": "Player", "file": "res://scripts/player.gd", "line": 1, "class_name": "Player", "extends": "CharacterBody2D", "community": 0}],
+  "edges": [{"source": "res://scripts/player.gd::fn:take_damage", "target": "res://autoload/events.gd::sig:player_died", "relation": "emits", "confidence": "EXTRACTED", "file": "res://scripts/player.gd", "line": 34}],
+  "communities": {"0": {"label": "scenes (Player)", "nodes": ["..."]}},
+  "issues": [{"severity": "error", "code": "missing-node", "file": "res://scripts/player.gd", "line": 18, "message": "...", "hint": "..."}]
+}
+```
+
+- **Communities** are Louvain clusters over the file-level graph, labelled by dominant folder
+  and hub file (test files don't drive the labels).
+- **God nodes** are ranked by how many *other files* touch them.
+
+## Options
+
+| Flag | Meaning |
+|---|---|
+| `--include-addons` | Also map `res://addons/` (skipped by default; plugins add noise) |
+| `--exclude DIR` | Skip a folder, repeatable (e.g. `--exclude tests --exclude prototypes`) |
+| `--out DIR` | Write somewhere other than `<project>/nodemap-out` |
+| `--no-html` | Skip `nodemap.html` |
+
+Folders with a `.gdignore` file are skipped, as are `.godot/` and nested Godot projects. You can
+commit `nodemap-out/` so teammates and CI get the report, or add it to `.gitignore`. Either way
+`cache/` is ignored.
+
+**Performance.** Extraction is regex- and indentation-based and cached per file by mtime. A
+project with a few hundred scripts builds in about a second, and the edit hook usually re-parses a
+single file.
 
 ## How it works
 
 ```
-walk() -> extract per file (cached by mtime) -> link across files -> cluster -> report / html / json
+find project.godot -> walk files -> extract per file (cached) -> link across files -> cluster -> report / html / json
 ```
 
-- `godot_text.py` parses Godot's ConfigFile format (`.tscn`, `.tres`, `project.godot`), including
-  multi-line values.
-- `scenes.py` extracts scene trees, instances, inheritance, `[connection]`s, groups and unique names.
-- `scripts.py` does regex- and indentation-based extraction for GDScript and C# (declarations, node
-  paths, connect/emit in every Godot 4 form, `preload`/`load`, input actions, groups, calls, typed
-  variables and Godot 3 leftovers).
-- `build.py` holds the Godot semantics: uid resolution, `class_name`/`extends` chains, the effective
-  scene tree (inherited and instanced scenes), the contexts a script runs in, node-path resolution
-  and signal and call resolution. It also collects the issues.
+| Module | Role |
+|---|---|
+| `godot_text.py` | Parser for Godot's ConfigFile format (`.tscn`, `.tres`, `project.godot`), multi-line values included |
+| `project.py` | Project discovery, `project.godot` settings, file index, uid index (scene headers, `.uid` sidecars, `.import` files) |
+| `scenes.py` | Scene trees, instances, inheritance, `[connection]`s, groups, unique names, `.tres` scripts |
+| `scripts.py` | GDScript and C# extraction: declarations, node paths, connect/emit, calls, typed variables, `preload`/`load`, input actions, groups, Godot 3 leftovers |
+| `build.py` | The Godot semantics. Resolves uids like the engine (uid first, then path), follows `class_name`/`extends` chains, computes effective scene trees and the contexts each script runs in, resolves node paths, signals and calls, and collects issues |
+| `analyze.py` | Communities, god nodes, surprising connections, signal bus, suggested questions |
+| `query.py`, `report.py`, `export_html.py` | Text answers, the report, the viewer |
+| `serve.py` | Dependency-free MCP stdio server |
+| `install.py`, `cli.py` | Assistant integration and the command line |
 
-## Limitations
+## Compared with graphify
 
-- Static analysis: nodes created purely in code, `get_node(some_variable)` and signals connected by
-  name strings built at runtime can't be resolved.
-- Engine classes aren't modelled (no built-in signal or method list). Connections to built-in
-  signals like `pressed` are recorded by name.
-- `res://addons/` is skipped unless you pass `--include-addons`.
+| | graphify | godot-nodemap |
+|---|---|---|
+| Scope | Any codebase or corpus (code, docs, papers, media) | Godot 4 projects |
+| Code parsing | tree-sitter, 30+ languages | GDScript + C#, Godot-aware |
+| Scenes / `.tscn` | Not modelled | Scene trees, instances, inheritance, connections, groups, `%Unique` |
+| Signals | Not modelled | Declared / emitted / connected, code and editor |
+| Engine config | Not modelled | Autoloads, Input Map, layers, main scene, uids |
+| Linting | No | `nodemap check` + a post-edit hook |
+| LLM usage | Optional, for docs and media | None |
+| Outputs | `graph.json`, `GRAPH_REPORT.md`, `graph.html` | `graph.json`, `NODEMAP_REPORT.md`, `nodemap.html` |
+| Assistant integration | Skill, hooks, MCP for many assistants | Skill, hooks, MCP, AGENTS.md |
+
+They can be used together: graphify for your design docs and wiki, nodemap for the game itself.
+
+## Limitations and FAQ
+
+**Does it run my game or need the Godot editor?** No. It only reads files.
+
+**Godot 3?** No, the tool targets Godot 4.x. It does flag Godot 3 syntax inside Godot 4 projects.
+
+**What can't it see?**
+
+- Nodes created purely in code.
+- `get_node(some_variable)`.
+- Signals connected by names built at runtime.
+- Engine-class APIs: there's no list of built-in signals and methods yet, so connections to
+  built-in signals like `pressed` are recorded by name without further checks.
+
+**False positive?** Run `nodemap explain <script>` to see which scenes nodemap thinks the script is
+attached to (`has_script` edges). Most false `missing-node` reports come from nodes added at
+runtime. Name them in code (`node.name = "X"`) or look them up with `get_node_or_null`.
+
+**Big projects?** Use `--exclude` for folders you don't care about and keep `--include-addons` off.
 
 ## Development
 
 ```bash
+git clone https://github.com/kusumaindraputra/godot-nodemap
+cd godot-nodemap
 pip install -e ".[dev]"
 pytest
 ```
 
-`tests/fixtures/demo_game` is a small Godot project (GDScript + C#) with deliberately planted bugs.
+`tests/fixtures/demo_game` is a small Godot 4 project (GDScript + C#) with deliberately planted
+bugs. It is used by the tests and by the examples in this README. New checks should come with a
+planted case there and an assertion in `tests/test_build.py`.
 
 ## License
 
