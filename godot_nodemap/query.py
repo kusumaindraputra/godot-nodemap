@@ -46,7 +46,7 @@ def _match(qtoks: list[str], hay: set[str]) -> int:
 _REL_PRIORITY = {"emits": 0, "connected_to": 0, "calls": 1, "node_path": 1, "uses_autoload": 2, "extends": 2,
                  "has_script": 2, "instances": 2, "inherits_scene": 2, "overrides": 3, "uses_action": 3,
                  "in_group": 3, "adds_to_group": 3, "queries_group": 3, "autoloads": 3, "uses_class": 4,
-                 "loads": 5, "preloads": 5, "references": 6, "uses": 6}
+                 "loads": 5, "preloads": 5, "references": 6, "uses": 6, "mentions": 4}
 
 
 def _is_test(g: Graph, nid: str) -> bool:
@@ -221,11 +221,11 @@ def explain(g: Graph, term: str, limit: int = 60) -> str:
     n = g.nodes[nid]
     out = [f"# {fmt_node(g, nid)}"]
     for k in ("class_name", "extends", "type", "lang", "params", "path", "doc", "exports", "declared_in",
-              "root_type", "uid", "singleton", "script_class"):
+              "root_type", "uid", "singleton", "script_class", "sections"):
         if n.get(k) not in (None, "", []):
             v = n[k]
             if isinstance(v, list):
-                v = ", ".join(v)
+                v = ("\n  " + "\n  ".join(v)) if k == "sections" else ", ".join(v)
             out.append(f"{k}: {v}")
     cof = g.community_of()
     if nid in cof:
@@ -241,7 +241,8 @@ def explain(g: Graph, term: str, limit: int = 60) -> str:
         rel = e["relation"] + (f"({e['signal']})" if e.get("signal") else "")
         key = f"{rel} ->" if direction == "out" else f"<- {rel}"
         conf = "" if e["confidence"] == "EXTRACTED" else f" [{e['confidence']}]"
-        groups.setdefault(key, []).append(f"{_short(g, other)}{conf} @{fmt_loc(file=e.get('file'), line=e.get('line'))}")
+        sec = f" \u00a7 {e['section']}" if e.get("section") else ""
+        groups.setdefault(key, []).append(f"{_short(g, other)}{sec}{conf} @{fmt_loc(file=e.get('file'), line=e.get('line'))}")
     shown = 0
     for key in sorted(groups):
         items = groups[key]

@@ -15,6 +15,7 @@ Issue codes (severity):
   missing-autoload / missing-main-scene (error)
   godot3-syntax (warning)             Godot 3 API/syntax in a Godot 4 project
   signal-never-emitted / signal-never-connected / unused-action (info)
+  stale-doc-reference (info)          a Markdown doc points at a file / Class.member that does not exist
 """
 from __future__ import annotations
 

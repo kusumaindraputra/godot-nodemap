@@ -96,3 +96,20 @@ def test_mcp_server(game):
     p = subprocess.run([sys.executable, "-m", "godot_nodemap", "serve"], input=msgs, capture_output=True, text=True, encoding="utf-8", cwd=game)
     replies = [json.loads(x) for x in p.stdout.splitlines()]
     assert replies[1]["result"]["content"][0]["text"].startswith("# signal hit")
+
+
+def test_docs_in_report_and_hook(game, capsys):
+    assert main([str(game), "--no-html"]) == 0
+    report = (game / "nodemap-out" / "NODEMAP_REPORT.md").read_text(encoding="utf-8")
+    assert "## Docs" in report and "Demo Game design" in report and "3 stale reference(s)" in report
+    # editing a doc re-checks it; stale references are warnings, so the edit is not blocked
+    r = _hook(game, game / "docs" / "design.md", game)
+    assert r.returncode == 0
+    assert "stale-doc-reference" in json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_update_keeps_no_docs(game, monkeypatch):
+    assert main([str(game), "--no-docs", "--no-html"]) == 0
+    assert main(["update", str(game), "--no-html"]) == 0
+    meta = json.loads((game / "nodemap-out" / "graph.json").read_text(encoding="utf-8"))["meta"]
+    assert meta["docs"] is False and meta["files"]["docs"] == 0

@@ -13,6 +13,7 @@ SCENE_EXT = {".tscn"}
 RESOURCE_EXT = {".tres"}
 GDSCRIPT_EXT = {".gd"}
 CSHARP_EXT = {".cs"}
+DOC_EXT = {".md"}
 SOURCE_EXT = SCENE_EXT | RESOURCE_EXT | GDSCRIPT_EXT | CSHARP_EXT
 
 SKIP_DIRS = {".godot", ".import", ".git", ".svn", ".hg", "node_modules", "bin", "obj",
@@ -130,8 +131,11 @@ class Paths:
         self.ignored_dirs: set[str] = set()
 
     def to_res(self, p: Path) -> str:
-        rel = p.resolve().relative_to(self.root).as_posix()
-        return "res://" + rel
+        try:  # paths from walk() are already under the resolved root; resolve() is slow
+            rel = p.relative_to(self.root).as_posix()
+        except ValueError:
+            rel = p.resolve().relative_to(self.root).as_posix()
+        return "res://" + (rel if rel != "." else "")
 
     def to_fs(self, res: str) -> Path:
         return self.root / res[len("res://"):] if res.startswith("res://") else Path(res)
@@ -145,16 +149,21 @@ class Paths:
         return hit if hit and hit != res else None
 
 
-def walk(root: Path, include_addons: bool = False, exclude: list[str] | None = None) -> tuple[Paths, list[Path]]:
+def walk(root: Path, include_addons: bool = False, exclude: list[str] | None = None,
+         include_docs: bool = True) -> tuple[Paths, list[Path]]:
     """Return a Paths index and the list of source files to extract."""
     paths = Paths(root)
     sources: list[Path] = []
     exclude_res = [e.rstrip("/") for e in (exclude or [])]
     for dirpath, dirnames, filenames in os.walk(root):
         d = Path(dirpath)
+        res_dir = paths.to_res(d)
         if ".gdignore" in filenames and d != root:
+            paths.ignored_dirs.add(res_dir)
+        # Godot ignores .gdignore folders, but design docs often live in one
+        in_ignored = any(res_dir == i or res_dir.startswith(i + "/") for i in paths.ignored_dirs)
+        if in_ignored and not include_docs:
             dirnames[:] = []
-            paths.ignored_dirs.add(paths.to_res(d))
             continue
         dirnames[:] = sorted(x for x in dirnames if x not in SKIP_DIRS and not x.startswith("."))
         # nested Godot projects are separate projects
@@ -166,7 +175,10 @@ def walk(root: Path, include_addons: bool = False, exclude: list[str] | None = N
             res = paths.to_res(fp)
             paths.all_files.add(res)
             paths.lower_index.setdefault(res.lower(), res)
-            if fp.suffix not in SOURCE_EXT:
+            if fp.suffix in DOC_EXT:
+                if not include_docs:
+                    continue
+            elif fp.suffix not in SOURCE_EXT or in_ignored:
                 continue
             rel = res[len("res://"):]
             if not include_addons and rel.startswith("addons/"):

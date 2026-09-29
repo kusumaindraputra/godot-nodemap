@@ -10,8 +10,8 @@ Inspired by [graphify](https://github.com/Graphify-Labs/graphify), built specifi
 ```
 $ nodemap .
 nodemap 0.1.0: Demo Game
-  7 scripts, 4 scenes, 1 resources -> 54 nodes, 76 edges, 6 communities (0.0s)
-  health: 9 errors, 3 warnings, 4 notes
+  7 scripts, 4 scenes, 1 resources, 2 docs -> 56 nodes, 90 edges, 6 communities (0.0s)
+  health: 9 errors, 3 warnings, 7 notes
   wrote nodemap-out/graph.json, NODEMAP_REPORT.md, nodemap.html
 ```
 
@@ -24,6 +24,7 @@ nodemap 0.1.0: Demo Game
 - [Install](#install)
 - [Quick start (5 minutes)](#quick-start-5-minutes)
 - [A tour of the commands](#a-tour-of-the-commands)
+- [Markdown docs](#markdown-docs)
 - [Using it with AI assistants](#using-it-with-ai-assistants)
 - [`nodemap check` reference](#nodemap-check-reference)
 - [The graph model](#the-graph-model)
@@ -51,6 +52,7 @@ from text alone keeps making the same mistakes:
 | Types `res://Scenes/HUD.tscn` for `res://scenes/HUD.tscn` | It doesn't notice case | `check` flags it (works in the editor on Windows, breaks in exports) |
 | Writes `yield(...)`, `export var` or `KinematicBody2D` | Godot 3 habits | `check` flags Godot 3 syntax |
 | Greps 20 files to learn who reacts to `player_died` | Signal wiring is spread across code and scenes | `nodemap signal player_died` gives emitters and listeners with `file:line` |
+| Ignores (or trusts outdated) design docs | Nothing links the GDD / ADRs to the code | Markdown docs are linked to the scripts, signals and scenes they mention; `explain` shows them, and stale references are flagged |
 
 ## What you get
 
@@ -58,7 +60,7 @@ Running `nodemap .` in a Godot project writes three files to `nodemap-out/`:
 
 | File | For | Contents |
 |---|---|---|
-| `NODEMAP_REPORT.md` | Humans and LLMs (one-page overview) | Main scene, autoloads and their signals, input actions, groups, named layers, the health check, god nodes, communities (subsystems), the signal bus, every scene tree, surprising cross-subsystem links, suggested questions |
+| `NODEMAP_REPORT.md` | Humans and LLMs (one-page overview) | Main scene, autoloads and their signals, input actions, groups, named layers, the health check, god nodes, communities (subsystems), the signal bus, every scene tree, surprising cross-subsystem links, docs and what they cover, suggested questions |
 | `graph.json` | Tools, the MCP server, your own scripts | All nodes, edges, communities and issues |
 | `nodemap.html` | Exploring visually | Interactive graph: search, filter by kind, colour by community, click a node to see its connections, and a browsable issue list |
 
@@ -117,7 +119,7 @@ nodemap claude install             # if you use Claude Code (see below)
 | `nodemap watch` | Rebuild whenever a project file changes |
 | `nodemap tree <Scene> [--expand N]` | "What nodes does this scene have?" |
 | `nodemap signal <name>` | "Who emits this signal, and who listens?" |
-| `nodemap explain <name>` | "Tell me everything about this script/scene/node/function/signal/autoload/action" |
+| `nodemap explain <name>` | "Tell me everything about this script/scene/node/function/signal/autoload/action/doc", including which docs mention it |
 | `nodemap query "<question>" [--budget N] [--dfs]` | "What's relevant to this question?" |
 | `nodemap path <A> <B>` | "How does A reach B?" |
 | `nodemap check [files] [--severity] [--json]` | "What's broken?" (exit code 1 when there are errors) |
@@ -235,6 +237,69 @@ nodemap check: 9 errors, 3 warnings, 0 notes
 - `--json` gives machine-readable output.
 - The exit code is 1 when there are errors, so `check` can gate CI.
 
+## Markdown docs
+
+Game projects keep a lot of knowledge in Markdown: game design documents, ADRs, feature specs,
+READMEs, TODO lists. nodemap maps every `*.md` in the project (also inside `.gdignore` folders,
+where docs usually live) and links each doc to the code it talks about, fully offline and without
+an LLM:
+
+| Written in the doc | Linked to | Confidence |
+|---|---|---|
+| A path: `res://scripts/player.gd`, `scripts/player.gd`, `../scripts/player.gd`, `[link](../scripts/player.gd)` | That file | EXTRACTED |
+| A bare file name: `Main.tscn` | That file, if the name is unique | INFERRED |
+| `Class.member` / `Autoload.member`: `Player.take_damage()`, `Events.player_died.emit()` | That function or signal | EXTRACTED |
+| A `class_name`, autoload or scene name in `` `code` `` | That script / autoload / scene | EXTRACTED |
+| The same name in prose (CamelCase only, e.g. HUD, GameState) | That script / autoload / scene | INFERRED |
+| A signal, input action or group name in `` `code` `` | That signal / action / group | INFERRED (AMBIGUOUS if several signals share the name) |
+| `some_function()` in `` `code` `` | Functions with that name (at most 3) | INFERRED / AMBIGUOUS |
+| A link to another `.md` | That doc | EXTRACTED |
+
+Every link is a `mentions` edge that records the doc line and the heading it sits under:
+
+```
+$ nodemap explain take_damage
+...
+<- mentions (1)
+  - Demo Game design § Player @docs/design.md:6
+
+$ nodemap explain design.md
+# [doc] Demo Game design (docs/design.md:1)
+sections:
+  # Demo Game design :1
+  ## Player :3
+  ## HUD :13
+  ## Removed :17
+mentions -> (10)
+  - Player § Player @docs/design.md:5
+  - Player.take_damage() § Player @docs/design.md:6
+  - events.gd::player_died § Player @docs/design.md:6
+  - jump § Player @docs/design.md:7
+  ...
+```
+
+**Stale references.** A path that doesn't exist, or a `Class.method()` / `Autoload.signal.emit()`
+whose member is gone, is reported as `stale-doc-reference`:
+
+```
+$ nodemap check --severity info --code stale-doc-reference
+docs/design.md:19: info [stale-doc-reference] doc mentions res://scripts/dash.gd, which does not exist (section 'Removed')
+docs/design.md:20: info [stale-doc-reference] doc mentions Events.player_respawned, but Events has no signal or function 'player_respawned' (section 'Removed')
+docs/design.md:21: info [stale-doc-reference] doc mentions notes/old.md, which does not exist (section 'Removed')
+```
+
+These are **notes**, not warnings. Docs often describe planned work or use example paths, so they
+never fail `check`. The report shows a per-doc count, and the Claude Code hook shows them when you
+edit that doc.
+
+**Kept out of the way:**
+
+- Docs don't count toward god nodes or surprising connections.
+- Each doc joins the community of the code it mentions most, so docs don't split the community list.
+- Plain lowercase words in prose are never matched. Only `code`, paths and CamelCase names are.
+- The block that `nodemap claude install` writes into `CLAUDE.md` / `AGENTS.md` is ignored.
+- `--no-docs` turns the feature off; `update` and the hooks remember the choice.
+
 ## Using it with AI assistants
 
 ### Claude Code
@@ -329,6 +394,7 @@ Pair it with `nodemap watch` in a terminal so the graph stays fresh while you wo
 | `godot3-syntax` | warning | `yield`, `export var`, `onready var`, `tool`, `setget`, `.instance()`, `change_scene()`, `connect("s", self, "m")`, `rand_range`, `Pool*Array`, `KinematicBody2D`/`Spatial`/..., `move_and_slide(velocity)`, ... |
 | `signal-never-emitted`, `signal-never-connected` | info | Dead signal wiring |
 | `unused-action` | info | An Input Map action no script uses |
+| `stale-doc-reference` | info | A Markdown doc points at a missing file, or at a `Class.method()` / `Autoload.signal` that no longer exists |
 
 To avoid false positives:
 
@@ -352,6 +418,7 @@ To avoid false positives:
 | `action` | `action:jump` |
 | `group` | `group:collectibles` |
 | `resource` (`.tres`), `asset` (textures, audio, ...), `missing` | `res://data/level_1.tres` |
+| `doc` (Markdown) | `res://docs/design.md` |
 
 **Relations**
 
@@ -363,6 +430,7 @@ To avoid false positives:
 | Node paths | `node_path` (function/script to the scene node it resolves to) |
 | Resources | `preloads`, `loads`, `references`, `uses` |
 | Project | `autoloads`, `uses_action`, `adds_to_group`, `queries_group` |
+| Docs | `mentions` (doc to anything it talks about; carries `section=`) |
 
 **Confidence** (as in graphify)
 
@@ -396,6 +464,7 @@ To avoid false positives:
 | `--exclude DIR` | Skip a folder, repeatable (e.g. `--exclude tests --exclude prototypes`) |
 | `--out DIR` | Write somewhere other than `<project>/nodemap-out` |
 | `--no-html` | Skip `nodemap.html` |
+| `--no-docs` | Don't map Markdown docs |
 
 Folders with a `.gdignore` file are skipped, as are `.godot/` and nested Godot projects. You can
 commit `nodemap-out/` so teammates and CI get the report, or add it to `.gitignore`. Either way
@@ -417,6 +486,7 @@ find project.godot -> walk files -> extract per file (cached) -> link across fil
 | `project.py` | Project discovery, `project.godot` settings, file index, uid index (scene headers, `.uid` sidecars, `.import` files) |
 | `scenes.py` | Scene trees, instances, inheritance, `[connection]`s, groups, unique names, `.tres` scripts |
 | `scripts.py` | GDScript and C# extraction: declarations, node paths, connect/emit, calls, typed variables, `preload`/`load`, input actions, groups, Godot 3 leftovers |
+| `docs.py` | Markdown extraction: title, headings, and candidate references (paths, links, `code`, `Class.member`, CamelCase names) |
 | `build.py` | The Godot semantics. Resolves uids like the engine (uid first, then path), follows `class_name`/`extends` chains, computes effective scene trees and the contexts each script runs in, resolves node paths, signals and calls, and collects issues |
 | `analyze.py` | Communities, god nodes, surprising connections, signal bus, suggested questions |
 | `query.py`, `report.py`, `export_html.py` | Text answers, the report, the viewer |
@@ -432,6 +502,7 @@ find project.godot -> walk files -> extract per file (cached) -> link across fil
 | Scenes / `.tscn` | Not modelled | Scene trees, instances, inheritance, connections, groups, `%Unique` |
 | Signals | Not modelled | Declared / emitted / connected, code and editor |
 | Engine config | Not modelled | Autoloads, Input Map, layers, main scene, uids |
+| Docs | Extracted with an LLM (concepts, rationale) | Linked to code by name and path, offline; stale references flagged |
 | Linting | No | `nodemap check` + a post-edit hook |
 | LLM usage | Optional, for docs and media | None |
 | Outputs | `graph.json`, `GRAPH_REPORT.md`, `graph.html` | `graph.json`, `NODEMAP_REPORT.md`, `nodemap.html` |
@@ -444,6 +515,10 @@ They can be used together: graphify for your design docs and wiki, nodemap for t
 **Does it run my game or need the Godot editor?** No. It only reads files.
 
 **Godot 3?** No, the tool targets Godot 4.x. It does flag Godot 3 syntax inside Godot 4 projects.
+
+**Does it understand what my docs *say*?** No. It links docs to the code they name and tells you
+when those names go stale, but it doesn't summarise or interpret prose. Pair it with graphify if you
+want LLM-extracted concepts from your design docs.
 
 **What can't it see?**
 

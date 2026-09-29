@@ -7,7 +7,8 @@ description: "Use for any question about a Godot 4 project (GDScript or C#): sce
 
 Godot 4 project -> knowledge graph. Understands what generic code tools miss: `.tscn` scene trees,
 instanced and inherited scenes, `[connection]` signal wiring, `$NodePath` / `%Unique` resolution,
-autoloads, `class_name`/`extends` chains, `preload()`, input actions, groups and uids.
+autoloads, `class_name`/`extends` chains, `preload()`, input actions, groups and uids, plus the
+Markdown docs (GDD, ADRs, specs) and which code they talk about.
 Outputs `nodemap-out/graph.json`, `nodemap-out/NODEMAP_REPORT.md` and `nodemap-out/nodemap.html`.
 
 ## Usage
@@ -52,5 +53,7 @@ Otherwise:
   lines you write by hand; Godot falls back to the path and assigns a real uid on next save.
 - After editing `.gd`, `.cs`, `.tscn` or `.tres` files run `nodemap check <changed files>` and fix
   every error it reports before you finish. `nodemap update` refreshes the graph (cached, fast).
+- Before changing a system, `nodemap explain <name>` also lists the design docs that mention it
+  (`<- mentions`). Read the relevant section, and update the doc if your change makes it stale.
 - `INFERRED` / `AMBIGUOUS` edges are best guesses (resolved through a typed variable or a unique
   signal name). Verify them in the source before relying on them.

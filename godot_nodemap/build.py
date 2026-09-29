@@ -17,6 +17,7 @@ from .graph import Graph
 from .project import (BUILTIN_ACTIONS, VALID_UID_RE, ProjectConfig, build_uid_index, find_project_root,
                       parse_project_godot, walk)
 from .scenes import ResourceModel, SceneModel, parse_resource, parse_scene
+from .docs import GODOT_FILE_EXT, DocModel, parse_markdown
 from .scripts import ScriptModel, parse_csharp, parse_gdscript
 
 OUT_DIR = "nodemap-out"
@@ -61,9 +62,10 @@ def _norm(parts: list[str]) -> list[str] | None:
 class Linker:
     def __init__(self, root: Path, cfg: ProjectConfig, paths, uids: dict[str, str],
                  scenes: dict[str, SceneModel], resources: dict[str, ResourceModel],
-                 scripts: dict[str, ScriptModel]):
+                 scripts: dict[str, ScriptModel], docs: dict[str, DocModel] | None = None):
         self.root, self.cfg, self.paths, self.uids = root, cfg, paths, uids
         self.scenes, self.resources, self.scripts = scenes, resources, scripts
+        self.docs = docs or {}
         self.g = Graph()
         self.class_names: dict[str, str] = {}
         self.autoload_script: dict[str, str] = {}
@@ -334,6 +336,8 @@ class Linker:
         for res, m in sorted(self.scripts.items()):
             self._link_script(res, m)
         self._post_checks()
+        if self.docs:
+            self._link_docs()
         self._materialize_targets()
         main = cfg.main_scene
         if main:
@@ -719,6 +723,126 @@ class Linker:
         for lg in m.legacy:
             g.issue("warning", "godot3-syntax", res, lg["line"], lg["msg"])
 
+    # ------------------------------------------------------------ docs
+    _DOC_SKIP = {"the", "and", "for", "not", "true", "false", "null", "self", "var", "func", "signal",
+                 "extends", "class_name", "return", "if", "else", "elif", "for", "while", "in", "pass",
+                 "await", "const", "static", "void", "int", "float", "bool", "string", "new", "this",
+                 "public", "private", "override", "using", "namespace", "class", "get", "set", "name", "value"}
+
+    # engine members any script has; `Foo.new()` in a doc is not stale
+    _BUILTIN_MEMBERS = {"new", "free", "queue_free", "duplicate", "instantiate", "get", "set", "call",
+                        "call_deferred", "emit", "emit_signal", "connect", "disconnect", "is_connected",
+                        "get_node", "add_child", "remove_child", "get_parent", "get_tree", "has_method",
+                        "set_deferred", "notification", "to_string", "get_class", "is_class", "load"}
+
+    def _resolve_doc_path(self, doc: str, text: str) -> tuple[str | None, str]:
+        """-> (res path, confidence) for a path written in a doc."""
+        t = text.strip().strip("<>").replace("\\", "/")
+        if t.startswith("res://"):
+            return (t if self.paths.exists(t) else None), "EXTRACTED"
+        doc_dir = PurePosixPath(doc[len("res://"):]).parent
+        for cand in (PurePosixPath(t.lstrip("./")) if not t.startswith("../") else None, doc_dir / t):
+            if cand is None:
+                continue
+            parts = _norm(list(cand.parts))
+            if parts is None:
+                continue
+            res = "res://" + "/".join(parts)
+            if self.paths.exists(res):
+                return res, "EXTRACTED"
+        if "/" not in t:
+            hits = [f for f in self._basename_index.get(t, [])]
+            if len(hits) == 1:
+                return hits[0], "INFERRED"
+        return None, ""
+
+    def _link_docs(self) -> None:
+        g = self.g
+        self._basename_index: dict[str, list[str]] = {}
+        for f in self.paths.all_files:
+            self._basename_index.setdefault(PurePosixPath(f).name, []).append(f)
+        scene_by_stem: dict[str, list[str]] = {}
+        for sres in self.scenes:
+            scene_by_stem.setdefault(PurePosixPath(sres).stem, []).append(sres)
+        func_index: dict[str, list[str]] = {}
+        for sres, m in self.scripts.items():
+            for fname in m.funcs:
+                func_index.setdefault(fname.split(".")[-1], []).append(_fid(sres, fname))
+        groups = {n["label"] for n in g.nodes.values() if n["kind"] == "group"}
+
+        def named(ident: str) -> list[str]:
+            """Class / autoload / scene called *ident*."""
+            if ident in self.cfg.autoloads:
+                return [f"autoload:{ident}"]
+            if ident in self.class_names:
+                return [self.class_names[ident]]
+            hits = scene_by_stem.get(ident, [])
+            return hits if len(hits) == 1 else []
+
+        for res, d in sorted(self.docs.items()):
+            g.node(res, "doc", d.title, file=res, line=1, lines=d.lines,
+                   sections=[f"{'#' * lv} {t} :{ln}" for lv, t, ln in d.sections[:40]])
+            for r in d.refs:
+                kind, text, line, sec = r["kind"], r["text"], r["line"], r["section"]
+                targets: list[str] = []
+                conf = "EXTRACTED"
+                if kind == "path":
+                    tgt, conf = self._resolve_doc_path(res, text)
+                    if tgt:
+                        targets = [tgt]
+                    elif text.endswith(tuple("." + e for e in GODOT_FILE_EXT + ("md",))):
+                        # docs often describe planned work or use example paths: a note, not a warning
+                        g.issue("info", "stale-doc-reference", res, line,
+                                f"doc mentions {text}, which does not exist" + (f" (section '{sec}')" if sec else ""),
+                                "Update the doc, or the file was renamed/deleted.")
+                elif kind == "qualified":
+                    base = named(text)
+                    member = r["member"]
+                    if member in GODOT_FILE_EXT or member in ("md", "png", "wav", "ogg", "import", "uid"):
+                        continue
+                    script = self.autoload_script.get(text) if text in self.cfg.autoloads else (
+                        base[0] if base and base[0] in self.scripts else None)
+                    found = None
+                    if script:
+                        owner = self.find_signal(script, member)
+                        if owner:
+                            found = _sid(owner, member)
+                        else:
+                            owner = self.find_func(script, member)
+                            if owner:
+                                found = _fid(owner, member)
+                    if found:
+                        targets = [found]
+                    else:
+                        targets = base
+                        if script and r["callish"] and member not in self._BUILTIN_MEMBERS:
+                            g.issue("info", "stale-doc-reference", res, line,
+                                    f"doc mentions {text}.{member}, but {text} has no signal or function '{member}'"
+                                    + (f" (section '{sec}')" if sec else ""),
+                                    "Update the doc, or the member was renamed/removed.")
+                elif kind == "call":
+                    hits = func_index.get(text, [])
+                    if 1 <= len(hits) <= 3:
+                        targets, conf = hits, "INFERRED" if len(hits) == 1 else "AMBIGUOUS"
+                elif kind in ("code", "prose"):
+                    if len(text) < 3 or text.lower() in self._DOC_SKIP:
+                        continue
+                    targets = named(text)
+                    if kind == "prose":
+                        conf = "INFERRED"
+                    elif not targets:
+                        sigs = self._sig_index.get(text, [])
+                        if 1 <= len(sigs) <= 3:
+                            targets = [_sid(s, text) for s in sigs]
+                            conf = "INFERRED" if len(sigs) == 1 else "AMBIGUOUS"
+                        elif text in self.declared_actions:
+                            targets = [f"action:{text}"]
+                        elif text in groups:
+                            targets = [f"group:{text}"]
+                for t in targets:
+                    if t != res:
+                        g.edge(res, t, "mentions", conf, file=res, line=line, section=sec or None)
+
     def _materialize_targets(self) -> None:
         """Give every file an edge points at (textures, audio, missing files) a node."""
         g = self.g
@@ -769,7 +893,7 @@ def _cache_version() -> str:
     """Cache is only valid for the exact extractor code that produced it."""
     h = hashlib.sha1(__version__.encode())
     here = Path(__file__).parent
-    for name in ("godot_text.py", "scenes.py", "scripts.py"):
+    for name in ("godot_text.py", "scenes.py", "scripts.py", "docs.py"):
         h.update((here / name).read_bytes())
     return h.hexdigest()
 
@@ -784,7 +908,7 @@ def _extract_all(root: Path, sources: list[Path], paths, cache_path: Path | None
                 cache = data.get("files", {})
         except Exception:
             cache = {}
-    scenes, resources, scripts = {}, {}, {}
+    scenes, resources, scripts, docs = {}, {}, {}, {}
     new_cache = {}
     hits = 0
     for fp in sources:
@@ -802,6 +926,8 @@ def _extract_all(root: Path, sources: list[Path], paths, cache_path: Path | None
                     model = parse_resource(fp, res)
                 elif fp.suffix == ".gd":
                     model = parse_gdscript(fp, res)
+                elif fp.suffix == ".md":
+                    model = parse_markdown(fp, res)
                 else:
                     model = parse_csharp(fp, res)
             except Exception as exc:  # never let one odd file kill the build
@@ -814,25 +940,27 @@ def _extract_all(root: Path, sources: list[Path], paths, cache_path: Path | None
             scenes[res] = model
         elif isinstance(model, ResourceModel):
             resources[res] = model
+        elif isinstance(model, DocModel):
+            docs[res] = model
         else:
             scripts[res] = model
     if cache_path:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with cache_path.open("wb") as fh:
             pickle.dump({"version": _cache_version(), "files": new_cache}, fh)
-    return scenes, resources, scripts, hits
+    return scenes, resources, scripts, docs, hits
 
 
 def build(target: Path, include_addons: bool = False, exclude: list[str] | None = None,
-          out_dir: Path | None = None, use_cache: bool = True) -> Graph:
+          out_dir: Path | None = None, use_cache: bool = True, include_docs: bool = True) -> Graph:
     root = find_project_root(target)
     cfg = parse_project_godot(root / "project.godot")
-    paths, sources = walk(root, include_addons=include_addons, exclude=exclude)
+    paths, sources = walk(root, include_addons=include_addons, exclude=exclude, include_docs=include_docs)
     uids, dup_uids = build_uid_index(paths)
     out = out_dir or (root / OUT_DIR)
     cache_path = out / "cache" / ("extract-addons.pkl" if include_addons else "extract.pkl") if use_cache else None
-    scenes, resources, scripts, hits = _extract_all(root, sources, paths, cache_path)
-    linker = Linker(root, cfg, paths, uids, scenes, resources, scripts)
+    scenes, resources, scripts, docs, hits = _extract_all(root, sources, paths, cache_path)
+    linker = Linker(root, cfg, paths, uids, scenes, resources, scripts, docs)
     g = linker.link()
     for uid, files in dup_uids.items():
         g.issue("error", "duplicate-uid", files[-1], 1, f"{uid} is used by several files: {', '.join(files)}",
@@ -846,8 +974,8 @@ def build(target: Path, include_addons: bool = False, exclude: list[str] | None 
         "autoloads": {k: v["path"] for k, v in cfg.autoloads.items()},
         "input_actions": sorted(linker.declared_actions),
         "layer_names": cfg.layer_names, "plugins": cfg.plugins,
-        "include_addons": include_addons, "files": {"scenes": len(scenes), "resources": len(resources),
-                                                     "scripts": len(scripts)},
+        "include_addons": include_addons, "docs": include_docs,
+        "files": {"scenes": len(scenes), "resources": len(resources), "scripts": len(scripts), "docs": len(docs)},
         "fingerprint": fingerprint, "cache_hits": hits,
     }
     return g

@@ -17,7 +17,8 @@ MARK_END = "<!-- nodemap:end -->"
 ALWAYS_ON = """## godot-nodemap
 
 This Godot project has a knowledge graph at nodemap-out/ (scenes, node trees, scripts, signals,
-autoloads, input actions, groups, resources) built by godot-nodemap.
+autoloads, input actions, groups, resources, and the Markdown docs that mention them) built by
+godot-nodemap.
 
 Rules:
 - For questions about the project, first run `nodemap query "<question>"`. Use `nodemap explain <name>`
@@ -26,6 +27,7 @@ Rules:
   These return small, file:line-annotated answers; prefer them to grepping or reading whole files.
 - Never guess node paths: check `nodemap tree <Scene>` before writing `$Path`, `%Name` or `get_node()`.
 - Do not invent `uid://` values in .tscn/.tres files; omit `uid=` on hand-written ext_resource lines.
+- `nodemap explain <name>` lists design docs that mention it; keep them in sync when you change behaviour.
 - After editing .gd/.cs/.tscn/.tres files run `nodemap check <files>` and fix all errors.
 - Read nodemap-out/NODEMAP_REPORT.md only for a broad overview.
 """
