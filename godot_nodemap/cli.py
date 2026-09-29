@@ -160,11 +160,13 @@ def watch(root: Path, include_addons: bool, interval: float) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if hasattr(sys.stdout, "reconfigure"):
-        try:
-            sys.stdout.reconfigure(encoding="utf-8")
-        except Exception:
-            pass
+    # hooks and MCP speak UTF-8 JSON over stdio; Windows defaults to the ANSI code page
+    for stream in (sys.stdin, sys.stdout):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except Exception:
+                pass
     if argv and argv[0] in ("-V", "--version"):
         print(__version__)
         return 0

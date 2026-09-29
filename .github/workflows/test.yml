@@ -13,4 +13,5 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]"
-      - run: pytest -q
+      # fail on any file I/O that relies on the platform default encoding (cp1252 on Windows)
+      - run: python -X warn_default_encoding -W error::EncodingWarning -m pytest -q
