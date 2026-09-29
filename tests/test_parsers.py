@@ -57,7 +57,7 @@ def test_gdscript_lambda_and_string_connect(tmp_path):
     f = tmp_path / "x.gd"
     f.write_text('extends Node\nsignal a\nfunc _ready():\n\ta.connect(func(): print(1))\n'
                  '\tconnect("a", Callable(self, "_on_a"))\n\tget_tree().process_frame.connect(_on_a)\n'
-                 '\tvar other = Node.new()\n\tother.get_node("Nope")\nfunc _on_a():\n\tpass\n')
+                 '\tvar other = Node.new()\n\tother.get_node("Nope")\nfunc _on_a():\n\tpass\n', encoding="utf-8")
     m = parse_gdscript(f, "res://x.gd")
     assert m.connects[0]["lambda"] and m.connects[0]["signal"] == "a"
     assert any(c["signal"] == "a" and c["handler"] == "_on_a" for c in m.connects)

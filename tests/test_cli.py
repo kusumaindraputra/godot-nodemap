@@ -10,9 +10,9 @@ def test_build_writes_outputs(game, capsys):
     assert main([str(game)]) == 0
     out = game / "nodemap-out"
     assert (out / "graph.json").exists() and (out / "NODEMAP_REPORT.md").exists() and (out / "nodemap.html").exists()
-    report = (out / "NODEMAP_REPORT.md").read_text()
+    report = (out / "NODEMAP_REPORT.md").read_text(encoding="utf-8")
     assert "## Signal bus" in report and "`Events`" in report and "Main.tscn" in report
-    html = (out / "nodemap.html").read_text()
+    html = (out / "nodemap.html").read_text(encoding="utf-8")
     assert "vis-network" in html and "</script>" in html
 
 
@@ -30,7 +30,7 @@ def test_check_exit_code_and_filter(game, monkeypatch, capsys):
 def _hook(game, file, cwd):
     payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(file)}, "cwd": str(cwd)})
     return subprocess.run([sys.executable, "-m", "godot_nodemap", "hook-check"], input=payload,
-                          capture_output=True, text=True, cwd=cwd)
+                          capture_output=True, text=True, encoding="utf-8", cwd=cwd)
 
 
 def test_hook_check_blocks_on_errors(game):
@@ -40,7 +40,7 @@ def test_hook_check_blocks_on_errors(game):
     assert r.returncode == 0
     # fixing the file clears the error on the next edit
     p = game / "scripts" / "player.gd"
-    p.write_text(p.read_text().replace("\t$Weapon.visible = false\n", ""))
+    p.write_text(p.read_text(encoding="utf-8").replace("\t$Weapon.visible = false\n", ""), encoding="utf-8")
     r = _hook(game, p, game)
     assert "Weapon" not in r.stderr
     r = _hook(game, game / "README.md", game)
@@ -48,28 +48,28 @@ def test_hook_check_blocks_on_errors(game):
 
 
 def test_hook_guard(game):
-    r = subprocess.run([sys.executable, "-m", "godot_nodemap", "hook-guard"], capture_output=True, text=True, cwd=game)
+    r = subprocess.run([sys.executable, "-m", "godot_nodemap", "hook-guard"], capture_output=True, text=True, encoding="utf-8", cwd=game)
     assert r.stdout == ""
     main([str(game), "--no-html"])
-    r = subprocess.run([sys.executable, "-m", "godot_nodemap", "hook-guard"], capture_output=True, text=True, cwd=game)
+    r = subprocess.run([sys.executable, "-m", "godot_nodemap", "hook-guard"], capture_output=True, text=True, encoding="utf-8", cwd=game)
     assert json.loads(r.stdout)["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
 
 
 def test_claude_install_roundtrip(game, monkeypatch):
     monkeypatch.chdir(game)
-    (game / "CLAUDE.md").write_text("# My game\n\nKeep this.\n")
+    (game / "CLAUDE.md").write_text("# My game\n\nKeep this.\n", encoding="utf-8")
     assert main(["claude", "install", "--mcp"]) == 0
     assert main(["claude", "install"]) == 0  # idempotent
-    text = (game / "CLAUDE.md").read_text()
+    text = (game / "CLAUDE.md").read_text(encoding="utf-8")
     assert text.count("## godot-nodemap") == 1 and "Keep this." in text
-    settings = json.loads((game / ".claude" / "settings.json").read_text())
+    settings = json.loads((game / ".claude" / "settings.json").read_text(encoding="utf-8"))
     assert len(settings["hooks"]["PostToolUse"]) == 1 and len(settings["hooks"]["PreToolUse"]) == 1
     assert (game / ".claude" / "skills" / "nodemap" / "SKILL.md").exists()
-    assert json.loads((game / ".mcp.json").read_text())["mcpServers"]["nodemap"]["args"] == ["serve"]
+    assert json.loads((game / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["nodemap"]["args"] == ["serve"]
     assert main(["claude", "uninstall"]) == 0
-    assert "godot-nodemap" not in (game / "CLAUDE.md").read_text()
-    assert "Keep this." in (game / "CLAUDE.md").read_text()
-    assert "nodemap" not in (game / ".claude" / "settings.json").read_text()
+    assert "godot-nodemap" not in (game / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "Keep this." in (game / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "nodemap" not in (game / ".claude" / "settings.json").read_text(encoding="utf-8")
 
 
 def test_mcp_server(game):
@@ -93,6 +93,6 @@ def test_mcp_server(game):
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "find_signal", "arguments": {"name": "hit"}}},
     ]) + "\n"
-    p = subprocess.run([sys.executable, "-m", "godot_nodemap", "serve"], input=msgs, capture_output=True, text=True, cwd=game)
+    p = subprocess.run([sys.executable, "-m", "godot_nodemap", "serve"], input=msgs, capture_output=True, text=True, encoding="utf-8", cwd=game)
     replies = [json.loads(x) for x in p.stdout.splitlines()]
     assert replies[1]["result"]["content"][0]["text"].startswith("# signal hit")
