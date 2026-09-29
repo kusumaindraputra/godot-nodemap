@@ -4,8 +4,10 @@
 mistakes AI makes in Godot code.**
 
 Inspired by [graphify](https://github.com/Graphify-Labs/graphify), built specifically for Godot
-(GDScript **and** C#). Fully offline, no LLM calls, pure Python with a single dependency
-(`networkx`).
+(GDScript **and** C#). No LLM calls and no API keys, pure Python with a single dependency
+(`networkx`). Only the HTML viewer needs a network connection, to load its graph library.
+
+![The nodemap.html viewer on the bundled demo game: the Player script is selected, and the side panel lists its signals, functions and node paths](docs/images/viewer-node.png)
 
 ```
 $ nodemap .
@@ -24,6 +26,7 @@ nodemap 0.1.0: Demo Game
 - [Install](#install)
 - [Quick start (5 minutes)](#quick-start-5-minutes)
 - [A tour of the commands](#a-tour-of-the-commands)
+- [The graph viewer](#the-graph-viewer)
 - [Markdown docs](#markdown-docs)
 - [Using it with AI assistants](#using-it-with-ai-assistants)
 - [`nodemap check` reference](#nodemap-check-reference)
@@ -62,7 +65,7 @@ Running `nodemap .` in a Godot project writes three files to `nodemap-out/`:
 |---|---|---|
 | `NODEMAP_REPORT.md` | Humans and LLMs (one-page overview) | Main scene, autoloads and their signals, input actions, groups, named layers, the health check, god nodes, communities (subsystems), the signal bus, every scene tree, surprising cross-subsystem links, docs and what they cover, suggested questions |
 | `graph.json` | Tools, the MCP server, your own scripts | All nodes, edges, communities and issues |
-| `nodemap.html` | Exploring visually | Interactive graph: search, filter by kind, colour by community, click a node to see its connections, and a browsable issue list |
+| `nodemap.html` | Exploring visually | Interactive graph: search, filter by kind, colour by community, click a node to see its connections, and a browsable issue list (see [The graph viewer](#the-graph-viewer)) |
 
 A `cache/` folder is also created (ignored by the generated `.gitignore`), so later runs only
 re-parse the files that changed.
@@ -115,8 +118,8 @@ nodemap claude install             # if you use Claude Code (see below)
 | Command | What it answers |
 |---|---|
 | `nodemap [path]` | Build or refresh the graph, report and HTML |
-| `nodemap update` | Incremental rebuild (keeps `--include-addons` from the last build) |
-| `nodemap watch` | Rebuild whenever a project file changes |
+| `nodemap update` | Incremental rebuild (keeps `--include-addons` / `--no-docs` from the last build) |
+| `nodemap watch` | Rebuild whenever a project file (`.gd`, `.cs`, `.tscn`, `.tres`, `.md`, ...) changes |
 | `nodemap tree <Scene> [--expand N]` | "What nodes does this scene have?" |
 | `nodemap signal <name>` | "Who emits this signal, and who listens?" |
 | `nodemap explain <name>` | "Tell me everything about this script/scene/node/function/signal/autoload/action/doc", including which docs mention it |
@@ -237,6 +240,50 @@ nodemap check: 9 errors, 3 warnings, 0 notes
 - `--json` gives machine-readable output.
 - The exit code is 1 when there are errors, so `check` can gate CI.
 
+## The graph viewer
+
+`nodemap-out/nodemap.html` is a single self-contained file. The graph data is embedded in the page,
+and the only external request loads [vis-network](https://visjs.github.io/vis-network/) from a
+CDN. Open it in any browser:
+
+```bash
+open nodemap-out/nodemap.html        # macOS
+xdg-open nodemap-out/nodemap.html    # Linux
+start nodemap-out\nodemap.html       # Windows
+```
+
+**Reading the graph**
+
+- **Node colour** is the node kind (see the legend in the side panel), or its community if you
+  switch *Color by* to `community`.
+- **Node size** grows with the number of connections.
+- **Arrows** point from source to target: a function *emits* a signal, a signal is *connected_to*
+  a handler, a doc *mentions* a script.
+- **Edge colour** is the relation. Purple is signals (`emits`, `connected_to`), green is `calls`,
+  blue is `extends` / `has_script`, orange-red is `instances`, sand is `node_path`, yellow is
+  `uses_autoload`, orange is `mentions`, and grey is preloads and everything else.
+- **Dashed edges** are `INFERRED` or `AMBIGUOUS`; solid edges are `EXTRACTED`.
+
+**Controls**
+
+| Control | What it does |
+|---|---|
+| Search box | Type a name and press Enter to jump to the best match (exact label, then partial label, then id) |
+| Kind checkboxes | Show or hide node kinds. Functions and scene nodes are hidden by default; while hidden, their edges are folded into their script or scene, so no connection disappears |
+| Color by | `kind` or `community` |
+| labels | Toggle node labels (handy on big projects) |
+| Click a node | The **Node** tab lists its attributes, doc sections, every relation grouped by type with `file:line`, and its issues. Click any name in the panel to jump to it |
+| **Issues** tab | Every issue from `nodemap check`, errors first, with hints. Click a file to jump to it |
+| **Communities** tab | The detected subsystems and their files |
+| Drag / scroll | Move nodes, pan and zoom. The layout freezes once it settles, so dragged nodes stay put |
+
+| Communities | Issues |
+|---|---|
+| ![Colour by community, with the Communities tab listing each subsystem and its files](docs/images/viewer-communities.png) | ![The Issues tab listing errors with hints next to the graph](docs/images/viewer-issues.png) |
+
+On large projects, keep functions and scene nodes hidden and turn labels off while you pan. Use the
+search box or `nodemap explain` to get to a specific node.
+
 ## Markdown docs
 
 Game projects keep a lot of knowledge in Markdown: game design documents, ADRs, feature specs,
@@ -316,15 +363,16 @@ nodemap claude install --mcp   # same, plus the MCP server in .mcp.json
    `nodemap tree` before writing node paths, never invent uids, and run `nodemap check` after
    edits. Your existing `CLAUDE.md` content is kept.
 2. **A PreToolUse hook on Grep/Glob.** It reminds the agent that the graph exists.
-3. **A PostToolUse hook on Edit/Write/MultiEdit.** This is the key piece: every edit is checked
-   right away.
+3. **A PostToolUse hook on Edit/Write/MultiEdit.** This is the key piece: every edit to a `.gd`,
+   `.cs`, `.tscn`, `.tres` or `.md` file is checked right away.
 
 ```
 Claude edits scripts/player.gd
   -> hook: nodemap refreshes the graph (only changed files are re-parsed)
   -> hook: runs `check` for player.gd
   -> errors?  yes -> fed back to Claude (exit code 2), which fixes them before moving on
-              no  -> silent (warnings are passed along as extra context)
+              no  -> silent (warnings are passed along as extra context;
+                               for a .md file, its stale references too)
 ```
 
 4. **The project-level `/nodemap` skill** in `.claude/skills/nodemap/SKILL.md`.
@@ -466,9 +514,10 @@ To avoid false positives:
 | `--no-html` | Skip `nodemap.html` |
 | `--no-docs` | Don't map Markdown docs |
 
-Folders with a `.gdignore` file are skipped, as are `.godot/` and nested Godot projects. You can
-commit `nodemap-out/` so teammates and CI get the report, or add it to `.gitignore`. Either way
-`cache/` is ignored.
+Folders with a `.gdignore` file are skipped for Godot files (Godot ignores them too), but the
+Markdown docs inside them are still mapped. `.godot/`, dot-folders and nested Godot projects are
+skipped entirely. You can commit `nodemap-out/` so teammates and CI get the report, or add it to
+`.gitignore`. Either way `cache/` is ignored.
 
 **Performance.** Extraction is regex- and indentation-based and cached per file by mtime. A
 project with a few hundred scripts builds in about a second, and the edit hook usually re-parses a
@@ -489,7 +538,7 @@ find project.godot -> walk files -> extract per file (cached) -> link across fil
 | `docs.py` | Markdown extraction: title, headings, and candidate references (paths, links, `code`, `Class.member`, CamelCase names) |
 | `build.py` | The Godot semantics. Resolves uids like the engine (uid first, then path), follows `class_name`/`extends` chains, computes effective scene trees and the contexts each script runs in, resolves node paths, signals and calls, and collects issues |
 | `analyze.py` | Communities, god nodes, surprising connections, signal bus, suggested questions |
-| `query.py`, `report.py`, `export_html.py` | Text answers, the report, the viewer |
+| `query.py`, `report.py`, `export_html.py` | Text answers, the report, the viewer (vis-network, data embedded in the page) |
 | `serve.py` | Dependency-free MCP stdio server |
 | `install.py`, `cli.py` | Assistant integration and the command line |
 
@@ -513,6 +562,10 @@ They can be used together: graphify for your design docs and wiki, nodemap for t
 ## Limitations and FAQ
 
 **Does it run my game or need the Godot editor?** No. It only reads files.
+
+**Does it work offline?** Everything except the HTML viewer does. The viewer loads vis-network from
+unpkg the first time you open it (your browser caches it after that). `graph.json`, the report and
+every command work without a network.
 
 **Godot 3?** No, the tool targets Godot 4.x. It does flag Godot 3 syntax inside Godot 4 projects.
 
@@ -541,11 +594,17 @@ git clone https://github.com/kusumaindraputra/godot-nodemap
 cd godot-nodemap
 pip install -e ".[dev]"
 pytest
+
+# what CI runs: also fails on file I/O that relies on the platform encoding (cp1252 on Windows)
+python -X warn_default_encoding -W error::EncodingWarning -m pytest
 ```
 
-`tests/fixtures/demo_game` is a small Godot 4 project (GDScript + C#) with deliberately planted
-bugs. It is used by the tests and by the examples in this README. New checks should come with a
+`tests/fixtures/demo_game` is a small Godot 4 project (GDScript + C#, plus a design doc and a
+README) with deliberately planted bugs and stale doc references. It is used by the tests, by the
+examples in this README and for the screenshots in `docs/images/`. New checks should come with a
 planted case there and an assertion in `tests/test_build.py`.
+
+CI runs the suite on Ubuntu and Windows with Python 3.10 and 3.12.
 
 ## License
 
